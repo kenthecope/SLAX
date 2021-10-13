@@ -1,0 +1,97 @@
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+import "../import/junos.xsl";
+
+/* This variable defines the CLI help text */
+var $arguments = {
+   <argument> {
+      <name> "logical-system";
+      <description> "Logical System to Query";
+   }
+   <argument> {
+      <name> "lsp";
+      <description> "Name of LSP to overlay on diagram (regex)";
+   }
+
+}
+
+/* Some common variables to be used */
+param $logical-system;
+var $ted;
+var $rtr-ted;
+var $avail-bw;
+var $avail-bw0;
+var $avail-bw1;
+var $avail-bw2;
+var $avail-bw3;
+var $avail-bw4;
+var $avail-bw5;
+var $avail-bw6;
+var $avail-bw7;
+var $lsp-hops;
+var $lsp-path;
+
+match / {
+  <op-script-results> {
+  /* Get the TED (opitonally get it from a logical system */
+  var $rpc = <get-ted-database-information> {
+     if ($logical-system) {
+        <logical-system> $logical-system;
+     }
+     <extensive>;
+  }
+  var $ted = jcs:invoke($rpc);
+
+  /* For every Router, create a parse out it's database separately */
+  for-each ( $ted/ted-database/ted-database-id ) {
+     var $net-rpc = <get-ted-database-information> {
+        if ($logical-system) {
+           <logical-system> $logical-system;
+        }
+        <system-id> . ;
+        <extensive>;
+     }
+     var $rtr-ted = jcs:invoke($net-rpc);
+     for-each ( $rtr-ted/ted-database/ted-link ) {
+        /* Common link header (without label definitions) */
+        var $linkout = jcs:printf("ROUTERID:%s@LINKTO:%s@LINKLOCAL:%s@LINKREMOTE:%s@LINKMETRIC:%s", 
+            $rtr-ted/ted-database/ted-database-id, ted-link-to, 
+            ted-link-local-address, ted-link-remote-address, ted-link-metric );
+
+        /* Figure out the available BW on the link, give up if its using
+           DiffServe */
+        var $avail-bw0 = substring-after (./ted-link-avail-bw0, "]");
+        var $avail-bw1 = substring-after (./ted-link-avail-bw1, "]");
+        var $avail-bw2 = substring-after (./ted-link-avail-bw2, "]");
+        var $avail-bw3 = substring-after (./ted-link-avail-bw3, "]");
+        var $avail-bw4 = substring-after (./ted-link-avail-bw4, "]");
+        var $avail-bw5 = substring-after (./ted-link-avail-bw5, "]");
+        var $avail-bw6 = substring-after (./ted-link-avail-bw6, "]");
+        var $avail-bw7 = substring-after (./ted-link-avail-bw7, "]");
+        /* If available bandwidth for all traffic classes is the same we can just use ct7 as DIFFserv-TE is not in use */
+        if ( $avail-bw0 == $avail-bw1 == $avail-bw2 == $avail-bw3 == 
+             $avail-bw4 == $avail-bw5 == $avail-bw6 == $avail-bw7 ) {
+             var $avail-bw = substring( $avail-bw7, 2,16);
+             <output> jcs:printf("%s@RESERVABLE:%s@AVAILBW:%s", $linkout,  
+                      ted-link-reservable-bandwidth, $avail-bw );
+        }
+        else {
+             /* Diffserv-TE in use */
+             var $avail-bwct0 = substring( $avail-bw0, 2,16);
+             var $avail-bwct1 = substring( $avail-bw1, 2,16);
+             var $avail-bwct2 = substring( $avail-bw2, 2,16);
+             var $avail-bwct3 = substring( $avail-bw3, 2,16);
+             var $avail-bwct4 = substring( $avail-bw4, 2,16);
+             var $avail-bwct5 = substring( $avail-bw5, 2,16);
+             var $avail-bwct6 = substring( $avail-bw6, 2,16);
+             var $avail-bwct7 = substring( $avail-bw7, 2,16);
+             <output> jcs:printf("%s@RESERVABLE:%s@AVAILBWCT0:%s@AVAILBWCT1:%s@AVAILBWCT2:%s@AVAILBWCT3:%s@ 
+                                  AVAILBWCT4:%s@AVAILBWCT5:%s@AVAILBWCT6:%s@AVAILBWCT7:%s", $linkout,  
+                                  ted-link-reservable-bandwidth, $avail-bwct0, $avail-bwct1, $avail-bwct2, $avail-bwct3, 
+                                  $avail-bwct4, $avail-bwct5, $avail-bwct6, $avail-bwct7 );
+        }
+     }
+  }
+}}

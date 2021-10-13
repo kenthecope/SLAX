@@ -1,0 +1,277 @@
+/*
+ * Author: Ken Cope
+ * Version: 1.0
+ * Last Modified: 08 Oct 2021
+ * Platform: EX
+ * Release: 17.1 and above
+ * License: Public Domain
+ *
+ * Description: This script configures access interfaces to accept a tagged vlan 
+ *   with switch-option voip, and optionally a forwarding-class.  The voice vlan
+ *   and fowarding class wil be advertised to an attached media device if LLDP-MED
+ *   is configured on the port. 
+ * 
+ *   The script takes the following arguments:
+ *   voice-vlan:  Name of the voice VLAN to be added to port. This VLAN must be configured on
+                  the switch.
+ *   forwarding-class: <optional> forwarding-class (802.1p) to be advertised to phones
+ *                     if used, the forwarding class referenced must be configured on 
+ *                     the switch.
+ *   exceptions:  a list of vlans to be excepted from the configuration.  This list
+ *                is a single argument, and can consist of either a list of vlan names separated by
+ *                whitespace or commas.  The list should be enclosed within a set of quotation marks
+ *                if there is any whitespace or special charaters in the list.
+ *
+ * Examples:
+ * - configure all access ports with a voice vlan of VOIP and use expedited forwarding
+ * op special-voip voice-vlan VOIP forwarding-class expedited-forwarding
+ *
+ * - configure all access ports with a voice vlan of VOICE except for any access port
+ *   assigned to the PRINTER VLAN
+ * op special-voip voice-vlan VOICE exceptions PRINTER
+ *
+ * - configure all access ports with a voice vlan of VOICE except for any access port
+ *   assigned to the PRINTER, WAN or SERVERS vlan
+ * op special-voip voice-vlan VOICE exceptions "PRINTER WAN SERVERS"
+ *
+ * - configure all access ports with a voice vlan of VOICE except for any access port
+ *   assigned to the PRINTER, WAN, FIREWALL or default vlan and use the forwarding class EF
+ * op special-voip voice-vlan VOICE exceptions "PRINTER,WAN,FIREWALL,default" forwarding-class EF
+ *
+ * Caveats:
+ *
+ * Revisions:
+ *   1.0 - Initial revision
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns func extension = "http://exslt.org/functions";
+ns vlans extension = "http://xml.juniper.net/vlans";
+
+import "../import/junos.xsl";
+
+param $forwarding-class;
+param $voice-vlan;
+param $exceptions;
+param $access-interfaces;
+param $except-vlans;
+
+var $arguments = {
+  <argument> {
+    <name> "forwarding-class";
+    <description> "Forwarding class to configure on voip interfaces";
+  }
+  <argument> {
+    <name> "voice-vlan";
+    <description> "Name of Voice VLAN to configure";
+  }
+  <argument> {
+    <name> "exceptions";
+    <description> "List of vlan names not to configure voip on. This can be a whitespace or comma separated list of VLAN names.";
+  }
+}
+
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script adds the voice-vlan and " _
+            "forwarding-class to all access ports except " _
+            "those ports that belong the vlans listed in " _
+            "the exceptions.";
+        var $temp = jcs:output($usage);
+
+        /* check that a voice vlan was specified */
+        if ( jcs:empty($voice-vlan)) {
+           terminate "voice-vlan must be specified";
+        }
+
+        /* process the exceptions into a node list of <split> elements */
+        var $except-vlans = jcs:split("[[:space:]|[.comma.]]", $exceptions);
+
+        /* get a node set of all of the vlans on the device along with their interface membership */
+        expr jcs:output( "Querying VLAN information:" );
+        var $vlans = jcs:invoke(<rpc>{<get-vlan-information>;});
+ 
+        /* check that the voice-vlan is configured on the switch */
+        if ( not($vlans/l2ng-l2ald-vlan-instance-group[l2ng-l2rtb-vlan-name = $voice-vlan ]/l2ng-l2rtb-vlan-name)) {
+            terminate "voice-vlan " _ $voice-vlan _ " must be configured on the device";
+        }
+ 
+        /* if the forwarding class opton was specified, make sure the referenced forwarding class 
+         * exists on the device
+         */
+        if ($forwarding-class) {
+            expr jcs:output( "Querying forwarding-classes:" );
+            var $fcs = jcs:invoke(<rpc>{<get-cos-forwarding-class-information>;});
+            if (not ($fcs/fc-map/fc-map-item[fc-name = $forwarding-class])){
+                terminate "forwarding-class " _ $forwarding-class _ " must be configured on the device";
+            }
+        }
+
+        /* Determine if the ports are access ports from the configuration, ignoring trunk ports */
+        expr jcs:output( "Querying configuration to match on access interfaces:" );
+        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                 <configuration> {
+                                    <interfaces>;
+                                 }
+                              }
+        var $configuration = jcs:invoke( $get-config-rpc );
+
+        /* match on any interface that is tagged as an access port, trim any whitespace */
+        var $access-interfaces = $configuration/interfaces/interface[unit/family/ethernet-switching/interface-mode = 'access']/name[normalize-space()];
+
+        /* Get the ethernet switching interfaces */
+        expr jcs:output( "Querying Ethernet Switching Interfaces:" );
+        var $ethernetsw = jcs:invoke(<rpc>{<get-ethernet-switching-interface-information>{<extensive>;}});
+     
+        /* some variables to be used */
+        mvar $voip-interfaces;
+        mvar $vlan-name;
+        mvar $allowed;
+        mvar $ifl;
+        mvar $ifl-allowed;
+
+        /* create a node-set list to keep track of ifls that meet the requirements */
+        set $voip-interfaces = <voip-interfaces>;
+
+        for-each ($vlans/l2ng-l2ald-vlan-instance-group) {
+            set $vlan-name = ./l2ng-l2rtb-vlan-name;
+            set $allowed = vlans:vlan-filter($vlan-name, $except-vlans);
+            if ($allowed){
+                /* go through the interfaces and see if it is an access interface */
+                for-each (./l2ng-l2rtb-vlan-member){
+                    /* trim of the * if it is present (up) */
+                    set $ifl = jcs:split("[[.asterisk.]]", ./l2ng-l2rtb-vlan-member-interface);
+                    set $ifl-allowed = vlans:am-i-an-access-interface($ifl, $access-interfaces); 
+                    /* check that the vlan is untagged on that ifl */
+                    if ($ethernetsw/l2ng-l2ald-iff-interface-entry[l2iff-interface-vlan-name = $vlan-name][l2iff-interface-name = $ifl][l2iff-interface-vlan-member-tagness="untagged"] and $ifl-allowed and $ifl) {
+                        append $voip-interfaces += <ifl>$ifl;
+                    }
+                }
+            }
+        }
+ 
+        /* display what interfaces will be configured with what to stdout */
+        for-each ( $voip-interfaces/ifl ) {
+           
+            if ( $forwarding-class ) {
+                expr jcs:output(concat(" - interface ", ., " will be configured to use voip with vlan ", $voice-vlan, " and forwarding-class ", $forwarding-class));
+            }
+            else {
+                expr jcs:output(concat(" - interface ", ., " will be configured to use voip with vlan ", $voice-vlan));
+            }
+        }
+
+        /* create candidtate configuration */
+        expr jcs:output( "Creating configuration changes:" );
+        var $config-changes = {
+            <configuration> {
+                <switch-options> {
+                    <voip> {
+                        for-each ($voip-interfaces/ifl) {
+                            <interface> {
+                                <name> .;
+                                <vlan> $voice-vlan;
+                                if ( $forwarding-class ) {
+                                    <forwarding-class> $forwarding-class;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+ 
+      var $load-action = "merge";
+      var $options := {
+       <commit-options> {
+           <log> "Configured voip interfaces";
+        }
+      }
+
+      var $conn_handle = jcs:open();
+
+      expr jcs:output( "Commiting configuration changes:" );
+      var $results := {
+         call jcs:load-configuration( $action=$load-action,
+             $commit-options=$options,
+             $configuration=$config-changes, $connection=$conn_handle);
+      }
+
+
+    var $close-results = jcs:close($conn_handle);
+
+    if ($results//xnm:error) {
+        for-each ($results//xnm:error) {
+            <output> message;
+        }
+    }
+    if ($results//xnm:warning) {
+        for-each ($results//xnm:warning) {
+            <output> message;
+        }
+    }
+    expr jcs:output( "Commited." );
+    
+  }
+}
+
+/* Template to determine if a provided IFL is an access interface 
+ * This takes an ifl name, and a list of access interfaces
+ * if the ifl is in the acces interface list, it returns a booelan of true
+ * otherwise it returns a boolean of false
+ */
+<func:function name="vlans:am-i-an-access-interface"> {
+    param $ifl;
+    param $access-interfaces;
+
+    /* turn the ifl into an ifd for comparison */
+    var $ifd = jcs:split("[[.period.]]", $ifl);
+
+    /* set a mutable variable to keep track of if we found the vlan or not */
+    mvar $found = "False";
+
+    /* go through the list and see if we match *VLAN */
+    for-each ($access-interfaces) {
+        if ( . = $ifd ) {
+            set $found = "True";
+        }
+    }
+    /* return results */
+    if ($found = "True"){
+       <func:result select="true()">;
+    }
+    else {
+       <func:result select="false()">;
+    }
+}
+
+/* function to determine if a vlan should be allowed 
+ * this takes a vlan-name as the first argument, and a exceptions list
+ * as the second.  It returns a boolean: false if the vlan-name
+ * showed up in the list and should not be allowed, or true
+ * if it should be allowed
+ */
+<func:function name="vlans:vlan-filter"> {
+    param $vlan-name;
+    param $except-vlans;
+    /* set a mutable variable to keep track of if we found the vlan or not */
+    mvar $found = "False";
+    for-each ( $except-vlans) {
+       if ( $vlan-name = . ){
+           set $found = "True";
+       }
+    }
+    /* return results */
+    if ($found = "True"){
+       <func:result select="false()">;
+    }
+    else {
+       <func:result select="true()">;
+    }
+}

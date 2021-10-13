@@ -1,0 +1,200 @@
+/*
+ * Author: Ken Cope
+ * Version: 1.2
+ * Last Modified: 29 Sep 2021
+ * Platform: EX
+ * Release: 17.1 and above
+ * License: Public Domain
+ *
+ * Description: This script looks for dynamic DHCP security bindings and creates
+ *  a static binding with the specified group name (default BYPASS) for a specified
+ *  VLAN (default Voice).  It will only create a static binding if the state is fully
+ *  bound (BOUND), and the interface is defined as an access type, trunks are ignored.
+ *  If any bindings are found that can be converted to static, a configuration
+ *  is created and commmited.
+ * 
+ *   The script takes the following arguments:
+ *   vlan:  VLAN name to be scanned
+ *   group:  Name of the DHCP security group for overriding defaults
+ *
+ * Caveats:
+ *  - on Junos 18.4R3, static override bindings dont seem to take effect until the DHCP lease
+ *    expires or the switch is restarted 
+ *
+ * Revisions:
+ *   1.2 - Add option to restart DHCP service
+ *   1.1 - Fix access interface scanning, add syslog
+ *   1.0 - Initial revision
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+param $group = 'BYPASS';
+param $vlan = 'Voice';
+param $dhcp-restart = 'False';
+
+var $arguments = {
+  <argument> {
+    <name> "group";
+    <description> "Name of dhcp-security group to use";
+  }
+  <argument> {
+    <name> "vlan";
+    <description> "Name of VLAN to create bindings for";
+  }
+  <argument> {
+    <name> "dhcp-restart";
+    <description> "Restart DHCP daemon after change? Set this to anything except False to restart";
+  }
+}
+
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script adds all of the dynamic DHCP snooping " _
+            "bindings to a static bypass list " _
+            "and commits the configuration.";
+        var $temp = jcs:output($usage);
+
+        expr jcs:output( "Querying DHCP Seurity Bindings:" );
+
+        var $cmd = <rpc> {
+            <get-dhcp-security-binding>;
+        }
+
+        var $dhcps = jcs:invoke($cmd);
+
+
+        /* Determine if the ports are access ports from the configuration, ignoring trunk ports */
+        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                 <configuration> {
+                                    <interfaces>;
+                                 }
+                              }
+        var $configuration = jcs:invoke( $get-config-rpc );
+
+        /* match on any interface that is tagged as an access port, trim any whitespace */
+        var $access_interfaces = $configuration/interfaces/interface[unit/family/ethernet-switching/interface-mode = 'access']/name[normalize-space()];
+
+        /* DEBUG list access interfaces */
+        /*
+        for-each ($access_interfaces) {
+            expr jcs:output(concat("ACCESS INTERFACE:", .));
+        }
+        <output> "Access interfaces......";
+        copy-of $access_interfaces;
+        */
+
+        /* DEBUG code for access port matching loop */
+        /*
+        for-each ($dhcps//dhcp-security-entry[vlan-name = $vlan]) {
+            var $port = jcs:split("[[.period.]]", ./intf-name);
+            expr jcs:output(concat("IFL:", $port));
+            if ($access_interfaces[. = $port]){
+                expr jcs:output(concat("MATCHED ACCESS INTERFACE:", $port));
+            }
+        }
+        */
+
+        /* Display what IP addresses we will create a static bypass for */
+        for-each ($dhcps//dhcp-security-entry[vlan-name = $vlan][state = 'BOUND']) {
+            var $port = jcs:split("[[.period.]]", ./intf-name);
+            var $ip_address = ./ip-address;
+            if ($ip_address) {
+                if ($access_interfaces[. = $port]){
+                    expr jcs:output( concat('Adding ', $ip_address, ' to dhcp-security static bypass to group ', $group, ' for interface ', $port));
+                    <output> concat('Added ', $ip_address, ' to dhcp-security static bypass to group ', $group, ' for interface ', $port);
+                    expr jcs:syslog( "change.info", concat('Added ', $ip_address, ' to dhcp-security static bypass to group ', $group, ' for interface ', $port));
+                }
+            }
+        }
+
+        /* Check to see if there are any entries and exit if not */
+        var $ips = $dhcps//dhcp-security-entry[vlan-name = $vlan][state = 'BOUND']/ip-address/text();
+
+
+        if ( jcs:empty($ips)) {
+            <output> concat("Device has no dynamic DHCP bindings currently on VLAN ", $vlan,". No changes will be made.");
+        }
+        else {
+            var $config-changes = {
+                <configuration> {
+                    <vlans> {
+                        for-each ($dhcps//dhcp-security-entry[vlan-name = $vlan][state = 'BOUND']) {
+                          /* only create config section for access ports, get ifd from ifl */
+                          var $port = jcs:split("[[.period.]]", ./intf-name);
+                          if ($access_interfaces[. = $port]){
+                            <vlan> {
+                                <name> ./vlan-name;
+                                <forwarding-options>{
+                                  <dhcp-security>{
+                                    <group> {
+                                      <name> $group;
+                                      <interface> {
+                                         <name> ./intf-name;
+                                         <static-ip> {
+                                           <name> ./ip-address;
+                                           <mac> ./hw-address;
+                                         }
+                                      }
+                                    }
+                                  }
+                                }
+                            }
+                          }
+                        }
+                    }
+                }
+            }
+
+    
+          var $load-action = "merge";
+          var $options := {
+           <commit-options> {
+               <log> "added static DHCP security bindings";
+            }
+          }
+    
+          var $conn_handle = jcs:open();
+    
+          var $results := { 
+             call jcs:load-configuration( $action=$load-action, 
+                 $commit-options=$options, 
+                 $configuration=$config-changes, $connection=$conn_handle); 
+          }
+    
+    
+        var $close-results = jcs:close($conn_handle);
+    
+        if ($results//xnm:error) {
+            for-each ($results//xnm:error) {
+                <output> message;
+            }
+        }
+        if ($results//xnm:warning) {
+            for-each ($results//xnm:warning) {
+                <output> message;
+            }
+        }
+        /* restart the dhcpd daemon */
+        if ($dhcp-restart != "False") {
+            expr jcs:output("Restarting DHCPD daemon");
+            var $dhcpd_restart_rpc = <restart-daemon> {
+                                        <daemon-name> 'dhcp-service'; 
+                                        <gracefully>;
+                                     }
+            var $result = jcs:invoke( $dhcpd_restart_rpc );
+            <output> $result;
+        }
+        
+   
+     }
+  }
+}

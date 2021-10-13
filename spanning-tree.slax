@@ -1,0 +1,95 @@
+/*
+ * Author: Ken Cope
+ * Version: 1.0
+ * Last Modified: 27 Sep 2021
+ * Platform: EX
+ * Release: 17.1 and above
+ * License: Public Domain
+ *
+ * Description: This script gathers information about the Ethernet Switching environment
+ *  related to spanning tree for offline analysis
+ * 
+ * Caveats:
+ *  - NATT
+ *
+ * Revisions:
+ *   1.0 - Initial revision
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+param $filename = concat("/var/tmp/", $hostname, ".stp.xml");
+
+var $arguments = {
+     <argument> {	
+          <name> "host";
+          <description> "IP address or hostname of the remote host"; 
+     }
+     <argument> {	
+          <name> "username";
+          <description> "username of remote host"; 	
+     }
+     <argument> {	
+          <name> "password";
+          <description> "password of remote host"; 	
+     }
+}
+
+param $host;
+param $username;
+param $password;
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script saves STP related information " _
+            "to a file in /var/tmp for offline STP troubleshooting " _
+            "in XML format.";
+        var $temp = jcs:output($usage);
+
+        expr jcs:output( "Gathering Info:" );
+        expr jcs:output( " - inventory" );
+        var $inv_result = jcs:invoke(<rpc>{ <get-chassis-inventory>;});
+
+        expr jcs:output( " - interface info" );
+        var $inf_result = jcs:invoke(<rpc>{ <get-interface-information>;});
+
+        expr jcs:output( " - LLDP Neighbors" );
+        var $lldp_result = jcs:invoke(<rpc>{ <get-lldp-neighbors-information>;});
+
+        expr jcs:output( " - ethernet switching interface info" );
+        var $infsw_result = jcs:invoke(<rpc>{ <get-ethernet-switching-interface-details>;});
+
+        expr jcs:output( " - MSTP info" );
+        var $mstp_result = jcs:invoke(<rpc>{ <get-mstp-configuration-information>;});
+
+        expr jcs:output( " - STP bridge info" );
+        var $bridge_result = jcs:invoke(<rpc>{ <get-stp-bridge-information>;});
+
+        expr jcs:output( " - STP interface info" );
+        var $infstp_result = jcs:invoke(<rpc>{ <get-stp-interface-information>;});
+
+        /* write to a document, have to do appends after initial document creation
+         * in order to get a newline after the last element
+         */
+        expr jcs:output( "Saving to " _ $filename );
+        <xsl:document href=$filename indent="yes" method="xml" encoding="utf-8"> {
+            <stp-ts-info> {
+                <hostname>$hostname;
+                copy-of $inv_result;
+                copy-of $inf_result;
+                copy-of $lldp_result;
+                copy-of $infsw_result;
+                copy-of $mstp_result;
+                copy-of $bridge_result;
+                copy-of $infstp_result;
+            }
+        }
+    }
+}

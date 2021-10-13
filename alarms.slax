@@ -1,0 +1,58 @@
+/* This script will populate the jnxUtil MIB, Juniper Utility MIB, with descriptions of any chassis alarms that are present so it can be queried with a SNMP 
+management tool.  Chassis alarms will show up in the mib with an ascii encoded index that will equate to chassis-alarm[index] where the index is the alarm number. 
+
+Version: Dec 03 2010
+Author: Ken Cope
+Last modified: Dec 03 2010, KC
+*/
+
+version 1.0;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+match / {
+    <op-script-results> {
+	/* Define the value we start with in the jnxUitl MIB */
+        var $mib-object = "chassis-alarm";
+	var $utility-mib = "jnxUtilStringValue.";
+
+	/* Clear out the positions of values so we get a fresh start */
+        var $snmp-walk-utility-mib-branch = "jnxUtilStringValue.99.104.97.115.115.105.115.45.97.108.97.114.109";
+
+	/* Walk the MIB branch and look for chassis-alarm# indexes */
+	var $snmp-walk-command = <walk-snmp-object> {
+		<snmp-object-name> $snmp-walk-utility-mib-branch;
+	}
+	var $snmp-walk-result = jcs:invoke($snmp-walk-command);
+
+	/* For every instance, clear out the MIB object */
+	for-each ( $snmp-walk-result/snmp-object/index/index-value) {
+		/* <output> "DEBUG: index " _ . ; */
+		var $mibclear-alarm = <request-snmp-utility-mib-clear> {
+			<object-type> "string";
+			<instance> . ;
+		}
+		var $mibclear-out = jcs:invoke($mibclear-alarm);
+	}
+
+	/* Now execute the equivalent of show chassis alarms */
+	var $rpc =  <get-alarm-information> ;
+	var $alarms = jcs:invoke($rpc);
+
+        /* For every alarm, populate a mib value in the utility mib */
+	for-each ( $alarms/alarm-detail/alarm-description ) {
+		/* <output> "DEBUG: ALARM NUMBER " _ position()_ ": "  _ .; */
+		var $mibset-alarm = <request-snmp-utility-mib-set> {
+			<object-type> "string";
+			<instance> $mib-object _ position();
+			<object-value> .;
+		}
+		/* Set the value in the utility MIB */
+		var $mbout = jcs:invoke($mibset-alarm); 
+	}
+    }
+}

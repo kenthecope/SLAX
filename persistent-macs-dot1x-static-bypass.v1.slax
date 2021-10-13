@@ -1,0 +1,74 @@
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script adds all of the registered persisent MAC." _
+            "addresses to the dot1x static bypass configuration " _
+            "and commits the configuration.";
+        var $temp = jcs:output($usage);
+
+        var $cmd = <rpc> {
+            <get-ethernet-switching-table-persistent-learning>;
+        }
+
+        var $macs = jcs:invoke($cmd);
+
+        for-each ($macs//persistent-mac-address) {
+            <output> concat('Added ', ., ' to dot1x bypass');
+        }
+
+
+        var $config-changes = {
+            <configuration> {
+                <protocols> {
+                    <dot1x> {
+                        <authenticator> {
+                            for-each ($macs//persistent-mac-address) {
+                                <static> {
+                                    <name> .;
+                                } 
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+      var $load-action = "merge";
+
+      var $options := {
+       <commit-options> {
+           <log> "adding persistent MACs to static dot1x bypass";
+        }
+      }
+
+      var $conn_handle = jcs:open();
+
+      var $results := { 
+         call jcs:load-configuration( $action=$load-action, 
+             $commit-options=$options, 
+             $configuration=$config-changes, $connection=$conn_handle); 
+      }
+
+
+    var $close-results = jcs:close($conn_handle);
+
+    if ($results//xnm:error) {
+        for-each ($results//xnm:error) {
+            <output> message;
+        }
+    }
+    if ($results//xnm:warning) {
+        for-each ($results//xnm:warning) {
+            <output> message;
+        }
+    }
+  }
+
+}
