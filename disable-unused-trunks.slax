@@ -1,0 +1,191 @@
+/*
+ * Author: Ken Cope
+ * Version: 1.0
+ * Last Modified: 10 Nov 2021
+ * Platform: EX
+ * Release: 17.1 and above
+ * License: Public Domain
+ *
+ * Description: This script finds trunk interfaces from the configuration and 
+ *              then will either list (default) or optionally add a description
+ *              to the interface and can also disable it. By default this script only
+ *              changes the configuration of interfaces that have never had traffic
+ *              on them (since the last reboot or clear interface statisitcs), but 
+ *              can be provided with the no-traffic-interfces only "False" statement
+ *              to operate on any interface that is operationally down
+ * 
+ * Arguments:
+ *  - disable:   Disable any unused trunk ports
+ *  - description:  Interface description to add (IFD).  Enclose with quotes if using special characters
+ *                  or whitespace. 
+ *  - no-traffic-interfaces-only: Only operate on interfaces with input and output bytes of 0. The default
+ *                                for this is True
+ *
+ * Caveats:
+ *  - None ATT
+ *
+ * Revisions:
+ *   1.0 - Initial revision
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+param $description;
+param $disable = 'False';
+param $no-traffic-interfaces-only = 'True';
+
+var $arguments = { 
+  <argument> {
+    <name> "description";
+    <description> "Description to add to interface";
+  }
+  <argument> {
+    <name> "disable";
+    <description> "Disable interfaces(true/false)? Default: False";
+  }
+  <argument> {
+    <name> "no-traffic-interfaces-only";
+    <description> "Disable only if there are no input or output bytes on the interface (true/false)? Default: True";
+  }
+}
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script disables all unused trunk ports " _
+            "that are phsically down.";
+        var $temp = jcs:output($usage);
+
+        mvar $do_config_change;
+ 
+        /* check that we are going to disable ports, set a description or both */
+        if ($disable = 'False' and jcs:empty($description)) {
+            expr jcs:output("No description or disable command specified, just listing ports.");
+            set $do_config_change = "False";
+        }
+
+        expr jcs:output( "Querying Interface Information:" );
+
+        /* Get the interface info so we can see oper/admin status and in/out byte counts */
+        var $cmd = <rpc> {
+            <get-interface-information> {
+                <detail>;
+            }
+        }
+        var $interface_infos = jcs:invoke($cmd);
+
+        expr jcs:output( "Determining Trunk Ports:" );
+        /* Determine if the ports are access ports from the configuration, ignoring trunk ports */
+        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                 <configuration> {
+                                    <interfaces>;
+                                 }
+                              }
+        var $configuration = jcs:invoke( $get-config-rpc );
+
+        /* match on any interface that is tagged as an access port, trim any whitespace */
+        var $trunk_interfaces = $configuration/interfaces/interface[unit/family/ethernet-switching/interface-mode = 'trunk']/name[normalize-space()];
+
+        var $admin_up_oper_down_interfaces = $interface_infos/physical-interface[oper-status= "down"][admin-status= "up"]/name[normalize-space()];
+        var $inactive_interfaces = $interface_infos/physical-interface[oper-status= "down"][admin-status= "up"][traffic-statistics/output-bytes = 0][traffic-statistics/input-bytes = 0]/name[normalize-space()];
+
+        mvar $pifd;
+ 
+        /* create a node-set list to keep track of if any ifds need to be reconfigured */
+        mvar $disable_ifds;
+        set $disable_ifds = <disable_interface>;
+
+
+
+        /* List trunks that will be disabled */
+        for-each ($trunk_interfaces) {
+            set $pifd = .;
+            var $my-ifd = $interface_infos/physical-interface[name = $pifd];
+            /* only intersted in oper status up/down */
+            if ($no-traffic-interfaces-only = 'False' or $no-traffic-interfaces-only = 'no' or $no-traffic-interfaces-only = 'false') {
+                if ($my-ifd/oper-status = 'down' and $my-ifd/admin-status = 'up'){
+                     expr jcs:output(concat("Trunk port: ", ., " is operationally down, but administratively up"));
+                     /* add the name to the change list */
+                     append $disable_ifds += <name>$pifd;
+                }
+            }
+            /* also check for traffic on the interface */
+            else {
+                if ($my-ifd/oper-status = 'down' and $my-ifd/admin-status = 'up' and $my-ifd/traffic-statistics/input-bytes = 0 and $my-ifd/traffic-statistics/output-bytes = 0){
+                     expr jcs:output(concat("Trunk port:", ., " is operationally down, but administratively up and has no input or ouput traffic"));
+                     /* add the name to the change list */
+                     append $disable_ifds += <name>$pifd;
+                }
+            }
+        }
+
+        /* Genearate a config */
+        if ( jcs:empty($disable_ifds)) {
+            <output> "Device has no trunk interfaces that will be disabled. No changes will be made.";
+        }
+        else if ( $do_config_change = 'False') {
+            <output> " ";
+        }
+        else {
+            /* update the config */
+            expr jcs:output( "Creating configuration changes:" );
+            var $config-changes = {
+                <configuration> {
+                    <interfaces> {
+                        for-each ($disable_ifds/name) {
+                            <interface> {
+                                <name> .;
+                                if ($description != 'False') {
+                                    <description>$description;
+                                }
+                                if ($disable != 'False') {
+                                    <disable>;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            copy-of $config-changes;
+            var $load-action = "merge";
+            var $options := {
+                <commit-options> {
+                    <log> "Configured voip interfaces";
+                }
+            }
+
+            var $conn_handle = jcs:open();
+
+            expr jcs:output( "Commiting configuration changes:" );
+            var $results := {
+               call jcs:load-configuration( $action=$load-action,
+                  $commit-options=$options,
+                  $configuration=$config-changes, $connection=$conn_handle);
+            }
+     
+     
+            var $close-results = jcs:close($conn_handle);
+     
+            if ($results//xnm:error) {
+                for-each ($results//xnm:error) {
+                    <output> message;
+                }
+            }
+            if ($results//xnm:warning) {
+                for-each ($results//xnm:warning) {
+                    <output> message;
+                }
+            }
+            expr jcs:output( "Commited." );
+
+            
+        }
+
+  }
+}

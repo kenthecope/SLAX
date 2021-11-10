@@ -32,6 +32,9 @@ nored.  If any bindings are found that can be converted to static, a configurati
 * This script configures access interfaces to accept a tagged vlan with switch-option voip, and optionally a forwarding-class.  The voice vlan
  *   and fowarding class wil be advertised to an attached media device if LLDP-MED is configured on the port.
 
+### disable-unused-trunks.slax
+* This script will add a description and/or disable any unuused trunk ports
+
 
 
 
