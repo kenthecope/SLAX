@@ -3,7 +3,15 @@ This script will free up as much space as possible on an EX VC stack. It mercili
 probably unused files and software packages.  
 
 Author: Ken Cope  kcope@junper.net
-Last modified: 02.04.2021
+Last modified: 03.05.2022
+- fixed file cleanup on VC members
+- remove files in user's home director execpt for .ssh directory
+- remove files in /var/log/shmlog/arg dir on all vc members
+- system storage clean up on all vcs
+- remove extra and seldom used junos packages
+- remove snapshots
+- restore the DHCP snooping, SLACC and DHCP databases after cleanup
+TODO: clean out all users home dirs 
 */
 
 version 1.0;
@@ -33,47 +41,27 @@ var $del_packages := {
 match / {
     <op-script-results> {
 
-        /* This only works on the master re - delete all files in home dir */
-        <output> "These files will be deleted on the master RE";
-        var $files_rpc = {
-            <file-list>;
-        }
-        var $files_result = jcs:execute($local, $files_rpc);
-        copy-of $files_result;
-
-        <output> "Deleteing all files in home directory on master RE";
-        var $delete_rpc = {
-            <file-delete> {
-                <path> '*';
-            }
-        }
-        var $delete_result = jcs:execute($local, $delete_rpc);
-        copy-of $delete_result;
-
-        /* rm -rf on the users home dir */
-        var $rm_rpc = {
-            <request-shell-execute> {
-                <command> "rm -rf *";
-            }
-        }
-        var $rm_result = jcs:execute($local, $rm_rpc);
-        copy-of $rm_result;
-
         /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
         var $vc_info = jcs:invoke('get-virtual-chassis-information');
 
         /* loop through each member and free up space that doesnt work on all-members */
         for-each( $vc_info//member-list/member/member-id ) {
-            var $member = .;
-            <output> concat('Cleaning up VC member: ', $member);
+            /* strip any spaces out */
+            var $member = translate(., ' ', '');
+            var $fpc = concat ('fpc', $member, ':');
+            expr jcs:output(concat("Freeing Space on VC member: ", $member));
 
             /* Standard request system storage cleanup */
             var $cleanup_rpc = {
                 <request-system-storage-cleanup>;
                 <member> $member;
             }
+            expr jcs:output(" - system storage cleanup");
             var $cleanup_result = jcs:execute($local, $cleanup_rpc);
-            copy-of $cleanup_result;
+            for-each ( $cleanup_result//multi-routing-engine-item/system-storage-cleanup-information/file-list/file ) {
+                expr jcs:output(concat(' -- removed ', ./file-name, ' : ', ./size, ' bytes'));
+                /* expr jcs:output(concat(" - system storage: ", ./re-name)); */
+            }
 
             /* Delete non-recovery snapshots */
             var $snapshot_rpc = {
@@ -81,13 +69,13 @@ match / {
                     <delete> '*';
                 }
             }
+            expr jcs:output(" - deleting snapshots");
             var $snapshot_result = jcs:execute($local, $snapshot_rpc);
-            copy-of $snapshot_result;
-
 
             /* fluff packages */
+            expr jcs:output(" - deleteing unnecessary Junos packages ");
             for-each ($del_packages/package) {
-                <output> concat('   Delete package: ', .);
+                expr jcs:output(concat(" -- removing package ", . ));
                 var $rpc = {
                     <request-package-delete> {
                         <package-name> .;
@@ -95,9 +83,172 @@ match / {
                     }
                 }
                 var $result = jcs:execute($local,$rpc);
-                copy-of $result;
+            }
+
+            /* Delete all files in logged in users home dir - TODO: inspect all home dirs */
+            var $files_rpc = {
+                <file-list> {
+                    <path> $fpc;
+                }
+            }
+            var $files_result = jcs:execute($local, $files_rpc);
+            expr jcs:output(concat( " - files will be deleted from member ", $member, " from the ", $files_result//directory/directory-name , " directory"));
+            for-each ($files_result//directory-list/directory/file-information) {
+                if (./file-directory) {
+                   expr jcs:output(concat( " - ", ./file-name , " is a directory"));
+                   /* recursively remove any directories */
+                   var $delete_dir_rpc = {
+                       <delete-directory> {
+                           <directory> concat($fpc, ./file-name);
+                           <recurse>;
+                       }
+                   }
+                   /* Do not remove the .ssh directory */
+                   if ( not(./file-name == '.ssh')) {
+                       var $delete_dir_result = jcs:execute($local, $delete_dir_rpc);
+                   }
+                   else {
+                       expr jcs:output(concat( " -- preserving ", ./file-name , " directory"));
+                   }
+                }
+                else {
+                    expr jcs:output(concat( " -- ", ./file-name ));
+                    var $delete_rpc = {
+                            <file-delete> {
+                                <path> concat($fpc, ./file-name);
+                        }
+                    }
+                    var $delete_result = jcs:execute($local, $delete_rpc);
+                }
+            }
+
+            /* Delete all files in /var/log/shmlog/arg/ */
+            var $shmlog_files_rpc = {
+                <file-list> {
+                    <path> concat($fpc, '/var/log/shmlog/arg');
+                }
+            }
+            var $shmlog_files_result = jcs:execute($local, $shmlog_files_rpc);
+            expr jcs:output(concat( " - files will be deleted from member ", $member, " from the ", $shmlog_files_result//directory/directory-name , " directory"));
+            for-each ($shmlog_files_result//directory-list/directory/file-information) {
+                if (./file-directory) {
+                   expr jcs:output(concat( " -- ", ./file-name , " is a directory"));
+                   /* recursively remove any directories */
+                   var $shmlog_delete_dir_rpc = {
+                       <delete-directory> {
+                           <directory> concat($fpc, '/var/log/shmlog/arg/', ./file-name);
+                           <recurse>;
+                       }
+                   }
+                   var $shmlog_delete_dir_result = jcs:execute($local, $shmlog_delete_dir_rpc);
+                }
+                else {
+                    expr jcs:output(concat( " -- ", ./file-name ));
+                    var $shmlog_delete_rpc = {
+                            <file-delete> {
+                                <path> concat($fpc, '/var/log/shmlog/arg/', ./file-name);
+                        }
+                    }
+                    var $shmlog_delete_result = jcs:execute($local, $shmlog_delete_rpc);
+                }
             }
         } 
+
+        /* Determine if DHCP snooping database is being saved to an alternate location */
+        expr jcs:output( "Querying configuration to find persistant storage locations:" );
+        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                 <configuration> {
+                                     <system> {
+                                         <processes>;
+                                     }
+                                 }
+                              }
+        var $configuration = jcs:invoke( $get-config-rpc );
+
+        /* The location of the DHCP snooping file (if it is defined in the config */
+        mvar $dhcp_snooping_file = $configuration/system/processes/dhcp-service/dhcp-snooping-file/location;
+        if ($dhcp_snooping_file) {
+            expr jcs:output(concat(" - found DHCPv4 snooping file location ", $dhcp_snooping_file));
+
+            /* Check to see if this starts with an absolute path, if it doesn't the file will be saved in /var/tmp */
+            if (not($dhcp_snooping_file[ starts-with(., "/") ])) {
+                /* Relative path, prepend /var/tmp onto the save file name */
+                set $dhcp_snooping_file = concat( "/var/tmp/", $dhcp_snooping_file);
+            }
+
+            /* Save the DHCP Snooping Database */
+            expr jcs:output( concat(" - backing up the DHCPv4 Snooping Database ", $dhcp_snooping_file));
+            var $save_dhcp_security_snooping_rpc = {
+                <save-dhcp-security-snooping>{
+                    <filename> $dhcp_snooping_file;
+                }
+            }
+            var $save_dhcp_security_snooping_result = jcs:execute($local, $save_dhcp_security_snooping_rpc);
+            expr jcs:output( " - DHCPv4 snooping file saved!" );
+        }
+        else {
+            expr jcs:output(" - DHCPv4 snooping file location not configured ");
+        }
+
+        /* The location of the DHCPv6 snooping file (if it is defined in the config */
+        mvar $dhcpv6_snooping_file = $configuration/system/processes/dhcp-service/dhcpv6-snooping-file/location;
+        if ($dhcpv6_snooping_file) {
+            expr jcs:output(concat(" - found DHCPv6 snooping file location ", $dhcpv6_snooping_file));
+
+            /* Check to see if this starts with an absolute path, if it doesn't the file will be saved in /var/tmp */
+            if (not($dhcpv6_snooping_file[ starts-with(., "/") ])) {
+                /* Relative path, prepend /var/tmp onto the save file name */
+                set $dhcp_snooping_file = concat( "/var/tmp/", $dhcp_snooping_file);
+            }
+
+            /* Save the DHCP Snooping Database */
+            expr jcs:output( concat(" - backing up the DHCPv6 Snooping Database ", $dhcpv6_snooping_file));
+            var $save_dhcpv6_security_snooping_rpc = {
+                <save-dhcpv6-security-snooping>{
+                    <filename> $dhcpv6_snooping_file;
+                }
+            }
+            var $save_dhcpv6_security_snooping_result = jcs:execute($local, $save_dhcpv6_security_snooping_rpc);
+            expr jcs:output( " - DHCPv6 snooping file saved!" );
+        }
+        else {
+            expr jcs:output(" - DHCPv6 snooping file location not configured ");
+        }
+
+        /* Save the SLAAC Snooping Database */
+        /* The location of the SLAAC snooping file (if it is defined in the config */
+        mvar $slaac_snooping_file = $configuration/system/processes/slaac-snoopd-service/persistent-file/location;
+        if ($slaac_snooping_file) {
+            expr jcs:output(concat(" - found SLAAC snooping file location ", $slaac_snooping_file));
+
+            /* Check to see if this starts with an absolute path, if it doesn't the file will be saved in /var/tmp */
+            if (not($slaac_snooping_file[ starts-with(., "/") ])) {
+                /* Relative path, prepend /var/tmp onto the save file name */
+                set $slaac_snooping_file = concat( "/var/tmp/", $slaac_snooping_file);
+            }
+
+            /* Save the DHCP Snooping Database */
+            expr jcs:output( concat(" - backing up the SLAAC Snooping Database ", $slaac_snooping_file));
+            var $save_slaac_snoop_file_rpc = {
+                <save-slaac-snoop-file>{
+                    <filename> "SLAAC-BACKUP-BEEEAACH";
+                }
+            }
+            var $save_slaac_snoop_file_result = jcs:execute($local, $save_slaac_snoop_file_rpc);
+            expr jcs:output( " - SLAAC snooping file saved!" );
+        }
+        else {
+            expr jcs:output(" - SLAAC snooping file location not configured ");
+        }
+
+        /* Regenerate Persistent Storage for DHCP */
+        expr jcs:output( "Regenerating DHCP Persistent Storage:" );
+        var $request_dhcp_regenerate_persistent-file_rpc = {
+            <request-dhcp-regenerate-persistent-file>;
+        }
+        var $request_dhcp_regenerate_persistent-file_result = jcs:execute($local, $request_dhcp_regenerate_persistent-file_rpc);
+        expr jcs:output( " - regenerated!" );
+
  
         expr jcs:close($local);
     }
