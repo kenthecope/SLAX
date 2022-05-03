@@ -231,7 +231,7 @@ match / {
             expr jcs:output( concat(" - backing up the SLAAC Snooping Database ", $slaac_snooping_file));
             var $save_slaac_snoop_file_rpc = {
                 <save-slaac-snoop-file>{
-                    <filename> "SLAAC-BACKUP-BEEEAACH";
+                    <filename> $slaac_snooping_file;
                 }
             }
             var $save_slaac_snoop_file_result = jcs:execute($local, $save_slaac_snoop_file_rpc);
