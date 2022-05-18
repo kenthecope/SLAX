@@ -14,6 +14,9 @@ Last modified: 18.05.2022
 - remove extra and seldom used junos packages
 - remove snapshots
 - restore the DHCP snooping, SLACC and DHCP databases after cleanup
+
+Known bugs:  
+- Removal of files in the cleanup_dirs doesnt report file sizes
 */
 
 version 1.0;
