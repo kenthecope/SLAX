@@ -4,7 +4,8 @@ probably unused files and software packages.
 
 Author: Ken Cope  kcope@juniper.net
 Last modified: 31.01.2023
-- 31.01.2023: add option @ISLOCAL = "false" so script will run staged from Junos Space
+- 31.01.2023: add option @ISLOCAL = "false" so script will run staged from Junos Space, thanks to Jessie Fish
+  set this to true if the script is alredy on the switch and Space should just run it instead of staging it
 - functionzed all calls and added extra directories to delete.  Cleaned up reporting and fixed
   preservation of ssh directories and authroized keys.  Added cleanup of /var/home and all 
   /var/home subdirectories
