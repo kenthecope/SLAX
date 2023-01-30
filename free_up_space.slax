@@ -2,8 +2,9 @@
 This script will free up as much space as possible on an EX VC stack. It merciliessly deletes
 probably unused files and software packages.  
 
-Author: Ken Cope  kcope@junper.net
-Last modified: 18.05.2022
+Author: Ken Cope  kcope@juniper.net
+Last modified: 31.01.2023
+- 31.01.2023: add option @ISLOCAL = "false" so script will run staged from Junos Space
 - functionzed all calls and added extra directories to delete.  Cleaned up reporting and fixed
   preservation of ssh directories and authroized keys.  Added cleanup of /var/home and all 
   /var/home subdirectories
@@ -32,7 +33,11 @@ param $member;
 param $fpc;
 param $file-information;
 
-/* @ISLOCAL = "true" */
+/* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
+/* @NAME = "FreeUpSpace" */
+/* @DESCRIPTION = "Mercilessly Free Up Space on an EX VC Stack" */
+/* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
+/* @ISLOCAL = "false" */
 
 var $local = jcs:open();
 
