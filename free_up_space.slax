@@ -3,7 +3,12 @@ This script will free up as much space as possible on an EX VC stack. It mercili
 probably unused files and software packages.  
 
 Author: Ken Cope  kcope@juniper.net
-Last modified: 31.01.2023
+Last modified: 13.02.2023
+- 14.02.2023: add argument "aggressiveness" to control how many packages are cleaned out, use the "lastresort" option
+  for aggressiveness to clean out packages that may cause an error, or "aggressive" to clean out packages that usually
+  aren't needed, but has a slight chance of causing a db error.  added a commit with a short comment at the 
+  end of the run to make sure that /var/run/db databaes have their version upgraded to try to keep Junos Space
+  syhcnronized for the more aggressive cleanout options
 - 31.01.2023: add option @ISLOCAL = "false" so script will run staged from Junos Space, thanks to Jessie Fish
   set this to true if the script is alredy on the switch and Space should just run it instead of staging it
 - functionzed all calls and added extra directories to delete.  Cleaned up reporting and fixed
@@ -18,10 +23,15 @@ Last modified: 31.01.2023
 - restore the DHCP snooping, SLACC and DHCP databases after cleanup
 
 Known bugs:  
-- Removal of files in the cleanup_dirs doesnt report file sizes
+- Removal of files in the cleanup_dirs doesn't report file sizes
+- Possible out of sync with Junos space, added commit at end to try to resolve this, which seems to result
+  from packages that are used to validate sections of the config that are no longer on the system.  These cause
+  errors in the syslog like UI_DBASE_MISMATCH_SEQUENCE and UI_DBASE_OPEN_FAILED .awaiting testing results
+  to see if the aggressiveness options allievate this issue.  Active netconf connections also seem to need to
+  be closed and restarted if some packages are removed or added.
 */
 
-version 1.0;
+version 1.1;
 ns junos = "http://xml.juniper.net/junos/*/junos";
 ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
 ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
@@ -33,6 +43,14 @@ import "../import/junos.xsl";
 param $member;
 param $fpc;
 param $file-information;
+param $aggressiveness;
+
+var $arguments = {
+  <argument> {
+    <name> "aggressiveness";
+    <description> "How aggressively do we clean out the space (standard|aggressive:lastresort)";
+  }
+}
 
 /* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
 /* @NAME = "FreeUpSpace" */
@@ -40,11 +58,36 @@ param $file-information;
 /* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
 /* @ISLOCAL = "false" */
 
-var $local = jcs:open();
+/* connection to the local system that we are executing this script on*/
+param $local = jcs:open();
 
 /* packages to delete -- make sure old is the last in the list */
+/* Removing /var/log/db.log.0.gz                                                   
+Removing /packages/sets/active/optional/jdocs-ex                                
+
+*/
 var $del_packages := {
    <package> "jweb-ex";
+   <package> "old";
+} 
+
+/* packages to aggressively delete -- make sure old is the last in the list */
+var $del_packages_aggressive := {
+   <package> "jweb-ex";
+   <package> "optional";
+   <package> "jail-runtime";
+   <package> "py-base";
+   <package> "py-base2";
+   <package> "py-extensions";
+   <package> "py-extensions2";
+   <package> "old";
+} 
+
+/* packages to aggressively delete -- make sure old is the last in the list */
+var $del_packages_lastresort := {
+   <package> "jweb-ex";
+   <package> "optional";
+   <package> "jphone-home";
    <package> "jail-runtime";
    <package> "jdocs-ex";
    <package> "jsd-jet-1";
@@ -63,6 +106,18 @@ var $cleanup_dirs := {
 
 match / {
     <op-script-results> {
+        /* Let the user know to what level of cleaning we are doing */
+        if ( $aggressiveness == 'lastresort' ) {
+            expr jcs:output("Performing a LAST RESORT disk space cleanup!");
+            expr jcs:output("YOU WILL NEED TO UPGRADE JUNOS IMMEDIATELY AFTER THIS COMPLETES!");
+        }
+        else if ( $aggressiveness == 'aggressive' ) {
+            expr jcs:output("Performing an AGGRESSIVE disk space cleanup!");
+            expr jcs:output("This removes several software packages which usually are not needed! You may need to reboot after this finishes!");
+        }
+        else {
+            expr jcs:output("Performing a standard disk space cleanup!");
+        }
 
         /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
         var $vc_info = jcs:invoke('get-virtual-chassis-information');
@@ -74,6 +129,7 @@ match / {
             var $fpc = concat ('fpc', $member, ':');
             expr jcs:output(concat("Freeing Space on VC member: ", $member));
 
+            /* delete seldom used junos packages that are not needed when a system is upgraded */
 
             /* system storage cleanup */
             var $cleanup_storage = cleanup:storage($member);
@@ -82,7 +138,7 @@ match / {
             var $cleanup_snapshots = cleanup:snapshots($member);
 
             /* delete seldom used junos packages that are not needed when a system is upgraded */
-            var $cleanup_packages = cleanup:packages($member);
+            var $cleanup_packages = cleanup:packages($member, $aggressiveness);
 
             /* Delete all files in logged in all users home dirs */
             var $home_files_rpc = {
@@ -145,7 +201,6 @@ match / {
                               }
         var $configuration = jcs:invoke( $get-config-rpc );
 
-
         /* Save the DHCPv4 Snooping Database */
         var $cleanup_dhcpv4 = cleanup:dhcpv4($configuration);
 
@@ -154,6 +209,16 @@ match / {
 
         /* Save the SLAAC Snooping Database */
         var $cleanup_slaac = cleanup:slaac($configuration);
+
+        /* Final for warning aggressive cleanups */
+        if ( $aggressiveness == 'lastresort' ) {
+            expr jcs:output('Finished LAST RESORT disk space cleanup!');
+            expr jcs:output('UPGRADE JUNOS IMMEDIATELY!!!');
+        }
+        if ( $aggressiveness == 'aggressive' ) {
+            expr jcs:output('Finished AGGRESSIVE disk space cleanup!');
+            expr jcs:output('You may need to reboot the device!!!');
+        }
  
         expr jcs:close($local);
     }
@@ -324,19 +389,55 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
     /* vc member */
     param $member;
 
-    /* Delete non-recovery snapshots */
-    /* fluff packages */
-    expr jcs:output(" - deleteing non-essential Junos packages ");
-    for-each ($del_packages/package) {
-        expr jcs:output(concat(" -- removing package ", . ));
-        var $rpc = {
-            <request-package-delete> {
-                <package-name> .;
-                <member> $member;
-            }
+    /* degree of package cleaning */
+    param $aggressiveness;
+
+    if ($aggressiveness == "lastresort"){
+        expr jcs:output(" - aggressively deleteing non-essential Junos packages, you WILL need to upgrade Junos after this completes ");
+	for-each ($del_packages_lastresort/package) {
+	    expr jcs:output(concat(" -- removing package ", . ));
+ 	    var $rpc = {
+	        <request-package-delete> {
+	   	    <package-name> .;
+		    <member> $member;
+		}
+ 	    }
+	    var $result = jcs:execute($local,$rpc);
+
         }
-        var $result = jcs:execute($local,$rpc);
+        /* do a semi empty commit (just a commnet) to force a db sync in /var/run/db */
+        var $cleanup_db = cleanup:commit();
     }
+    else if ($aggressiveness == "aggressive"){
+        expr jcs:output(" - deleteing optional Junos packages, you may need to upgrade Junos after this completes ");
+	for-each ($del_packages_aggressive/package) {
+	    expr jcs:output(concat(" -- removing package ", . ));
+ 	    var $rpc = {
+	        <request-package-delete> {
+	   	    <package-name> .;
+		    <member> $member;
+		}
+ 	    }
+	    var $result = jcs:execute($local,$rpc);
+
+        }
+        /* do a semi empty commit (just a commnet) to force a db sync in /var/run/db */
+        var $cleanup_db = cleanup:commit();
+    }
+    else {
+        expr jcs:output(" - deleteing non-essential Junos packages ");
+	for-each ($del_packages/package) {
+	    expr jcs:output(concat(" -- removing package ", . ));
+ 	    var $rpc = {
+	        <request-package-delete> {
+	   	    <package-name> .;
+		    <member> $member;
+		}
+ 	    }
+	    var $result = jcs:execute($local,$rpc);
+        }
+    }
+
 }
 
 
@@ -522,3 +623,35 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
     expr jcs:output( " - regenerated!" );
 
 }
+
+/*
+ * function to do a commit to try to keep the juniper.db database in sync
+ */
+<func:function name="cleanup:commit"> {
+
+        expr jcs:output( "Syncing /var/run/db with a commit" );
+
+        /* empty config change */
+        var $config-changes = {
+           <configuration> {
+              <junos:comment> "free_up_space /var/run/db sync";
+           }
+        }
+
+        var $load-action = "merge";
+        var $options := {
+         <commit-options> {
+             <log> "Issuing commit to update /var/run/junper.db sequence number";
+          }
+        }
+
+        expr jcs:output( "Commiting comment to update db versions." );
+        var $func_results := {
+           call jcs:load-configuration( $action=$load-action,
+             $commit-options=$options,
+             $configuration=$config-changes, $connection=$local);
+        }
+
+        expr jcs:output( "Commited." );
+
+} 
