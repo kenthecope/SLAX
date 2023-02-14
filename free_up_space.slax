@@ -75,7 +75,6 @@ var $del_packages := {
 var $del_packages_aggressive := {
    <package> "jweb-ex";
    <package> "optional";
-   <package> "jail-runtime";
    <package> "py-base";
    <package> "py-base2";
    <package> "py-extensions";
