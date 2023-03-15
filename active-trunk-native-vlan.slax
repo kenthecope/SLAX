@@ -1,0 +1,179 @@
+/*
+ * Author: Ken Cope
+ * Version: 0.01
+ * Last Modified: 15 March 2023
+ * Platform: EX
+ * Release: 17.1 and above
+ * License: Public Domain
+ *
+ * Description: This script finds active trunk interfaces from the configuration and 
+ *              operational output and then set the native-vlan-id (untagged) vlan
+ *              to that which is specified
+ * 
+ * Arguments:
+ *  - vlan:   VLAN ID to set as untagged vlan on trunk port
+ *
+ * Caveats:
+ *  - This does not add the vlan to the members list, or remove the old one from the ports being modified
+ *
+ * Revisions:
+ *   0.1 - Initial revision
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+/* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
+/* @NAME = "active-trunk-native-vlan" */
+/* @DESCRIPTION = "Sets the native-vlan-id on active trunk ports" */
+/* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
+/* @ISLOCAL = "false" */
+
+param $vlan;
+
+var $arguments = { 
+  <argument> {
+    <name> "vlan";
+    <description> "VLAN ID";
+  }
+}
+
+match / {
+    <op-script-results> {
+
+        var $usage = "This script sets the VLAN ID on active trunk " _
+            "ports.";
+        var $temp = jcs:output($usage);
+ 
+        /* check that we are going to disable ports, set a description or both */
+        if (jcs:empty($vlan)) {
+            expr jcs:output("VLAN ID is required.");
+            terminate "vlan is required";
+        }
+
+        /* check that the VLAN is defined in the switch */
+        expr jcs:output(concat("Looking for VLAN ", $vlan, " on device"));
+        var $vlan_cmd = <rpc> {
+            <get-vlan-information> {
+                <vlan-name>$vlan;
+            }
+        }
+        var $vlan_infos = jcs:invoke($vlan_cmd);
+        /* get the vlan name and tag that we are moving to */
+        var $vlan_name = $vlan_infos/l2ng-l2ald-vlan-instance-group/l2ng-l2rtb-vlan-name[normalize-space()];
+        var $vlan_tag = $vlan_infos/l2ng-l2ald-vlan-instance-group/l2ng-l2rtb-vlan-tag[normalize-space()];
+        if ( jcs:empty($vlan_name)) {
+            expr jcs:output(concat("WARNING: VLAN ID ", $vlan, " is not configured under vlans section"));
+        }
+        else {
+            expr jcs:output(concat("VLAN id ", $vlan, " has name ", $vlan_name, " ", $vlan_tag));
+        }
+
+        expr jcs:output( "Querying Interface Information:" );
+
+        /* Get the interface info so we can see oper/admin status and in/out byte counts */
+        var $cmd = <rpc> {
+            <get-interface-information> {
+                <detail>;
+            }
+        }
+        var $interface_infos = jcs:invoke($cmd);
+
+        expr jcs:output( "Determining Active Trunk Ports to Configure:" );
+        /* Determine if the ports are access ports from the configuration, ignoring trunk ports */
+        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                 <configuration> {
+                                    <interfaces>;
+                                 }
+                              }
+        var $configuration = jcs:invoke( $get-config-rpc );
+
+        /* match on any interface that is tagged as an access port, trim any whitespace */
+        var $trunk_interfaces = $configuration/interfaces/interface[unit/family/ethernet-switching/interface-mode = 'trunk']/name[normalize-space()];
+
+        /* identify port state */
+        var $admin_up_oper_down_interfaces = $interface_infos/physical-interface[oper-status= "down"][admin-status= "up"]/name[normalize-space()];
+        var $inactive_interfaces = $interface_infos/physical-interface[oper-status= "down"][admin-status= "up"][traffic-statistics/output-bytes = 0][traffic-statistics/input-bytes = 0]/name[normalize-space()];
+        var $admin_up_oper_up_interfaces = $interface_infos/physical-interface[oper-status= "up"][admin-status= "up"]/name[normalize-space()];
+
+        mvar $pifd;
+ 
+        /* create a node-set list to keep track of if any ifds need to be reconfigured */
+        mvar $vlan_ifds;
+        set $vlan_ifds = <native-vlan-update>;
+
+
+
+        /* List trunks that will be disabled */
+        for-each ($trunk_interfaces) {
+            set $pifd = .;
+            var $my-ifd = $interface_infos/physical-interface[name = $pifd];
+            /* only intersted in oper status up/up */
+            if ($my-ifd/oper-status = 'up' and $my-ifd/admin-status = 'up'){
+                    expr jcs:output(concat(" - trunk port: ", ., " is operationally up, and administratively up"));
+                    /* add the name to the change list */
+                    append $vlan_ifds += <name>$pifd;
+            }
+        }
+
+        /* Genearate a config */
+        if ( jcs:empty($vlan_ifds)) {
+            <output> "Device has no trunk interfaces that need the native-vlan-id updated. No changes will be made.";
+        }
+        else {
+            /* update the config */
+            expr jcs:output( "Creating configuration changes:" );
+            var $config-changes = {
+                <configuration> {
+                    <interfaces> {
+                        for-each ($vlan_ifds/name) {
+                            <interface> {
+                                <name> .;
+                                <native-vlan-id> $vlan;
+                            }
+                        }
+                    }
+                }
+            }
+            copy-of $config-changes;
+            var $load-action = "merge";
+            var $options := {
+                <commit-options> {
+                    <log> "Configured new native-vlan id on active trunk interfaces";
+                }
+            }
+
+            var $conn_handle = jcs:open();
+
+            expr jcs:output( "Commiting configuration changes:" );
+            var $results := {
+               call jcs:load-configuration( $action=$load-action,
+                  $commit-options=$options,
+                  $configuration=$config-changes, $connection=$conn_handle);
+            }
+     
+     
+            var $close-results = jcs:close($conn_handle);
+     
+            if ($results//xnm:error) {
+                for-each ($results//xnm:error) {
+                    <output> message;
+                }
+            }
+            if ($results//xnm:warning) {
+                for-each ($results//xnm:warning) {
+                    <output> message;
+                }
+            }
+            expr jcs:output( "Commited." );
+
+            
+        }
+
+  }
+}
