@@ -1,0 +1,54 @@
+/* 
+This script will save and or load the DHCP snooping database
+using the "<save|load> dhcp-security-snoop <filename>" command
+
+Unfortunately, there is no RPC for this command.....
+
+Author: Ken Cope  kcope@junper.net
+Last modified: 09.03.2022
+*/
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+import "../import/junos.xsl";
+
+/* @ISLOCAL = "true" */
+
+var $local = jcs:open();
+
+match / {
+    <op-script-results> {
+
+        /* This only works on the master re - delete all files in home dir */
+        <output> "These files will be deleted on the master RE";
+        var $files_rpc = {
+            <file-list>;
+        }
+        var $files_result = jcs:execute($local, $files_rpc);
+        copy-of $files_result;
+
+        /* Save the snooping db - run from shell as there is no RPC for this command */
+        var $save_rpc = {
+            <request-shell-execute> {
+                <command> "cli save dhcp-security-snoop SNOOP-ARCHIVE";
+            }
+        }
+        var $save_result = jcs:execute($local, $save_rpc);
+        copy-of $save_result;
+
+
+        /* Load the snooping db - run from shell as there is no RPC for this command */
+        var $load_rpc = {
+            <request-shell-execute> {
+                <command> "cli load dhcp-security-snoop SLNOOP-ARCHIVE";
+            }
+        }
+        var $load_result = jcs:execute($local, $load_rpc);
+        copy-of $load_result;
+
+
+        expr jcs:close($local);
+    }
+}

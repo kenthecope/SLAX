@@ -1,0 +1,28 @@
+version 1.0;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+match / {
+    <op-script-results> {
+        var $vc_info = jcs:invoke('get-virtual-chassis-information');
+
+        for-each ($vc_info/member-list/member/member-id){
+            /* strip spaces */
+            var $member = translate(., ' ', '');
+
+            var $fpc = concat ('fpc', $member, ':'); 
+
+            var $file-list = {
+                         <file-list> {
+                           <path> $fpc;
+                         }
+            }
+            var $file-list-result = jcs:invoke($file-list);   
+            copy-of $file-list-result;
+        }
+    }
+}

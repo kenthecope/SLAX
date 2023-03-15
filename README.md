@@ -21,6 +21,7 @@ nored.  If any bindings are found that can be converted to static, a configurati
 
 ### free_up_space.slax
 * This script will free up as much space as possible on an EX VC stack. It merciliessly deletes probably unused files and software packages.  
+* This script has three levels of aggressiveness on how deep the "extra" packages that will be cleand out are, the default level should be safe to use every day, the "aggressive" level will clean out very thorughly and the device MUST be upgraded directly after running this level.
 
 ### resv.slax
 * Collects LSP and TED information and spits out the results in a parsable output suitable for feeding into graphviz
@@ -34,6 +35,9 @@ nored.  If any bindings are found that can be converted to static, a configurati
 
 ### disable-unused-trunks.slax
 * This script will add a description and/or disable any unuused trunk ports
+
+### active-trunk-native-vlan.slax
+* Sets the native-vlan-id on active trunk ports
 
 
 

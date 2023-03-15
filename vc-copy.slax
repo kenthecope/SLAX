@@ -1,0 +1,45 @@
+version 1.0;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+match / {
+    <op-script-results> {
+        <output method = "text"> {
+            var $rpc = <command> "show virtual-chassis status";
+
+            var $out = jcs:invoke($rpc);
+              
+            for-each ($out//member){
+         
+            var $fpc = ./fpc-slot;
+  
+            var $strip-space = translate($fpc, ' ', '');
+            var $strip-left = translate($strip-space, '( ', '');
+            var $strip-right = translate($strip-left, ')', ''); 
+            var $result = translate($strip-right, 'FPC', 'fpc');
+           
+
+            var $dest = concat ($result, ':/var/db/scripts/op/vc-copy.slax'); 
+            expr $dest _ "\n";
+
+
+            var $ftp = {
+                         <file-copy> {
+                           <source> "/var/db/scripts/op/vc-copy.slax";
+                           <destination> $dest;
+                         }
+            }
+            var $exec = jcs:invoke($ftp);   
+
+
+
+
+            }
+            
+        }
+    }
+}
