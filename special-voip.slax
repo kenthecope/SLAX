@@ -1,7 +1,7 @@
 /*
  * Author: Ken Cope
- * Version: 1.0
- * Last Modified: 08 Oct 2021
+ * Version: 1.1
+ * Last Modified: 20 Mar 2023
  * Platform: EX
  * Release: 17.1 and above
  * License: Public Domain
@@ -41,7 +41,8 @@
  * Caveats:
  *
  * Revisions:
- *   1.0 - Initial revision
+ *   1.1 - fix rpc issue with ethernet swtiching interfaces, 20 Mar 2023
+ *   1.0 - Initial revision, 08 Oct 2021
  *
  */
 
@@ -127,7 +128,7 @@ match / {
 
         /* Get the ethernet switching interfaces */
         expr jcs:output( "Querying Ethernet Switching Interfaces:" );
-        var $ethernetsw = jcs:invoke(<rpc>{<get-ethernet-switching-interface-information>{<extensive>;}});
+        var $ethernetsw = jcs:invoke(<rpc>{<get-ethernet-switching-interface-details>{<extensive>;}});
      
         /* some variables to be used */
         mvar $voip-interfaces;
@@ -155,6 +156,8 @@ match / {
                 }
             }
         }
+        copy-of $voip-interfaces;
+        
  
         /* display what interfaces will be configured with what to stdout */
         for-each ( $voip-interfaces/ifl ) {
@@ -187,24 +190,25 @@ match / {
             }
         }
  
-      var $load-action = "merge";
-      var $options := {
-       <commit-options> {
-           <log> "Configured voip interfaces";
+        copy-of $config-changes;
+        var $load-action = "merge";
+        var $options := {
+         <commit-options> {
+             <log> "Configured voip interfaces";
+          }
         }
-      }
+  
+        var $conn_handle = jcs:open();
+  
+        expr jcs:output( "Commiting configuration changes:" );
+        var $results := {
+           call jcs:load-configuration( $action=$load-action,
+               $commit-options=$options,
+               $configuration=$config-changes, $connection=$conn_handle);
+        }
 
-      var $conn_handle = jcs:open();
 
-      expr jcs:output( "Commiting configuration changes:" );
-      var $results := {
-         call jcs:load-configuration( $action=$load-action,
-             $commit-options=$options,
-             $configuration=$config-changes, $connection=$conn_handle);
-      }
-
-
-    var $close-results = jcs:close($conn_handle);
+      var $close-results = jcs:close($conn_handle);
 
     if ($results//xnm:error) {
         for-each ($results//xnm:error) {
