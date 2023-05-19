@@ -3,7 +3,9 @@ This script will free up as much space as possible on an EX VC stack. It mercili
 probably unused files and software packages.  
 
 Author: Ken Cope  kcope@juniper.net
-Last modified: 13.02.2023
+Last modified: 19.05.2023
+- 19.05.2023: clean out /var/log and /var/tmp beyond what request system storage cleanup does
+              removes any files that are older than 2 days except active log and trace files
 - 14.02.2023: add argument "aggressiveness" to control how many packages are cleaned out, use the "lastresort" option
   for aggressiveness to clean out packages that may cause an error, or "aggressive" to clean out packages that usually
   aren't needed, but has a slight chance of causing a db error.  added a commit with a short comment at the 
@@ -35,6 +37,7 @@ version 1.1;
 ns junos = "http://xml.juniper.net/junos/*/junos";
 ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
 ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns date = "http://exslt.org/dates-and-times";
 ns func extension = "http://exslt.org/functions";
 ns cleanup extension = "http://xml.juniper.net/cleanup";
 
@@ -103,6 +106,24 @@ var $cleanup_dirs := {
    <directory> "/var/log/shmlog/arg/";
 } 
 
+/* /var/log files to preserve */
+var $preserve_var_log := {
+   <file> "chassisd";
+   <file> "dcd";
+   <file> "software_install_status.log";
+   <file> "wtmp";
+}
+
+/* /var/tmp/ files to preserver */
+var $preserve_var_tmp := {
+   <file> "LOCK_FILE";
+   <file> "DHCPv6.db";
+   <file> "DHCPv4.db";
+}
+
+/* Maximium age of a file - 1 day and 1 second */
+var $max_age = 86401;  
+
 match / {
     <op-script-results> {
         /* Let the user know to what level of cleaning we are doing */
@@ -117,6 +138,21 @@ match / {
         else {
             expr jcs:output("Performing a standard disk space cleanup!");
         }
+
+        /* Get the active syslog files */
+        expr jcs:output( "Querying configuration to find active syslog files:" );
+        var $get-syslog-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                         <configuration> {
+                                             <system> {
+                                                 <syslog>;
+                                             }
+                                         }
+                                      }
+
+        /* grab a copy of the syslog config so we don't delete any active syslog files if combing /var/log */
+        var $syslog-config = jcs:invoke( $get-syslog-config-rpc );
+        var $syslog-files = $syslog-config/system/syslog/file/name;
+        copy-of $syslog-files;
 
         /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
         var $vc_info = jcs:invoke('get-virtual-chassis-information');
@@ -139,6 +175,7 @@ match / {
             /* delete seldom used junos packages that are not needed when a system is upgraded */
             var $cleanup_packages = cleanup:packages($member, $aggressiveness);
 
+
             /* Delete all files in logged in all users home dirs */
             var $home_files_rpc = {
                 <file-list> {
@@ -146,6 +183,7 @@ match / {
                     <detail>;
                 }
             }
+
             var $home_files_result = jcs:execute($local, $home_files_rpc);
             expr jcs:output(concat( " - cleaning member ", $member, " directory ", $home_files_result//directory/directory-name));
 
@@ -175,9 +213,7 @@ match / {
                    var $delete_subdir_files_result = cleanup:delete-file($fpc, ., $directory);
                    /* Recursively delete directories */
                    var $delete_subdirs_result = cleanup:delete-dir($fpc, ., $subdir);
-                   
                }
-               
             }
 
             /* Delete the SHMLOG contents */
@@ -186,8 +222,15 @@ match / {
                 var $delete_extra_dir_result = cleanup:cleanup-dir($fpc, .);
                 /* var $cleanup_shmlog = cleanup:shmlog($fpc); */
             }
-        }
 
+            /* Delete files in /var/log */ 
+            expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/log"));
+            var $delete_var_log_files_result = cleanup:cleanup-dir-age($fpc, "/var/log", $preserve_var_log, $syslog-files, $max_age);
+
+            /* Delete files in /var/tmp */ 
+            expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/tmp"));
+            var $delete_var_tmp_files_result = cleanup:cleanup-dir-age($fpc, "/var/tmp", $preserve_var_tmp, $syslog-files, $max_age);
+        }
 
         /* Save any services that use some sort of persistent file storage */
         expr jcs:output( "Querying configuration to find persistant storage locations:" );
@@ -198,6 +241,8 @@ match / {
                                      }
                                  }
                               }
+
+        /* grab a copy of the config */
         var $configuration = jcs:invoke( $get-config-rpc );
 
         /* Save the DHCPv4 Snooping Database */
@@ -209,6 +254,7 @@ match / {
         /* Save the SLAAC Snooping Database */
         var $cleanup_slaac = cleanup:slaac($configuration);
 
+
         /* Final for warning aggressive cleanups */
         if ( $aggressiveness == 'lastresort' ) {
             expr jcs:output('Finished LAST RESORT disk space cleanup!');
@@ -218,8 +264,78 @@ match / {
             expr jcs:output('Finished AGGRESSIVE disk space cleanup!');
             expr jcs:output('You may need to reboot the device!!!');
         }
+
+        var $tracefiles = cleanup:report-tracefiles();
  
         expr jcs:close($local);
+    }
+}
+
+/* function to cleanup the contents of a directory 
+ * this takes the fpc (fpc0, fpc1, etc) and the file as an argument
+ * preserve which are files that should not be removed
+ * age - seconds from todays date at which older files should be removed
+ * as well as the direcotory name to be cleaned out
+ */
+function cleanup:cleanup-dir-age ( $fpc, $directory, $preserve, $system-syslog-files, $age) { 
+
+    /* set a mutable variable to keep track of if we deleted the file or not, -1 means not deleted, anything else is the file size 
+     *  in bytes
+     */
+    mvar $deleted = -1;
+    /* variable to determine if we want to preserve a file or not, keep the file by default */
+    mvar $keep = 1;
+    mvar $syslog-files := {
+        <empty> "nothing";
+    } 
+
+    /* get a list of the files in the directory provided */
+    var $cleanup_files_rpc = {
+        <file-list> {
+            <path> concat($fpc,  $directory);
+            <detail>;
+        }
+    }
+    var $cleanup_files_result = jcs:execute($local, $cleanup_files_rpc);
+
+    /* check if looking at the log dir */
+    if ( $directory == "/var/log" ){
+        set $syslog-files = $system-syslog-files;
+    }
+
+    /* iterate through the files list */
+    for-each ($cleanup_files_result//directory-list/directory/file-information) {
+        /* LIST THE FILE */
+        set $keep = 1;
+        var $file-name = ./file-name;
+        /* skip directories */
+        if ( not(./file-directory )) {
+            if (date:seconds() - ./file-date > $age ) {
+                set $keep = 0;
+                for-each ($syslog-files) {
+                    /* expr jcs:output(concat(" **** SYSLOG FILE:", $fpc, ":", . , " ", $file-name)); */
+                    if ( .  == $file-name ) {
+                        expr jcs:output(concat(" --- active syslog file:", $fpc, ":", . )); 
+                        set $keep = 1;
+                    }
+                }
+                for-each ($preserve/file) {
+                    if ( $file-name == .) {
+                        /* expr jcs:output(concat(" ==== PRESERVE FILE:", $fpc, ":", . )); */
+                        set $keep = 1;
+                    }
+                }
+            }
+            if ( $keep == 0 ) {
+                /* Delete the file */
+                expr jcs:output(concat(" -- deleteing:", $fpc, ":", $file-name ));
+                var $delete-file-result = cleanup:delete-file($fpc, ., $directory);
+            } 
+            else {
+                /* preserve the file */
+                expr jcs:output(concat(" -- preserving: ", $fpc, $directory, "/", $file-name ));
+            }
+        }
     }
 }
 
@@ -233,6 +349,8 @@ function cleanup:cleanup-dir ( $fpc, $directory) {
      *  in bytes
      */
     mvar $deleted = -1;
+    /* boolean to keep track of if file should be wiped or not */
+    mvar $keep_this_file = 0;   
 
 
     /* get a list of the files in the directory provided */
@@ -356,7 +474,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
             else {
                 /* successfully deleted the file */
                 set $deleted = $delete_result;
-                expr jcs:output(concat(" -- removed ", $fpc, $directory, "/", $file-information/file-name, ' ', $file-information/size, ' bytes'));
+                expr jcs:output(concat(" -- removed ", $fpc, $directory, "/", $file-information/file-name, ' ', $file-information/file-size, ' bytes'));
             }
         }
         else {
@@ -654,3 +772,28 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
         expr jcs:output( "Commited." );
 
 } 
+
+/*
+ * function to report any active trace files
+ */
+<func:function name="cleanup:report-tracefiles"> {
+
+   expr jcs:output( "Looking for active trace files:" );
+   /* keep track of if we found an active traceoptin or not */
+   mvar $tracefiles = 0;
+
+   var $get-full-config-rpc = <get-configuration database="committed" inherit="inherit"> ;
+   var $config = jcs:invoke( $get-full-config-rpc);
+   for-each ($config//traceoptions/file/filename ) {
+        expr jcs:output( concat(" *** WARNING active tracefile: ", .) );
+        set $tracefiles = 1;
+   }
+
+   if ( $tracefiles == 1 ) {
+        expr jcs:output(" - consider deleting or deactivating any traceoptions that are not needed!");
+   }
+   else {
+        expr jcs:output(" - no active tracefiles found ");
+   }
+
+}
