@@ -1,0 +1,308 @@
+/* 
+Perform a limited replace pattern with type action on the following configuration sections:
+groups/system/hostname
+system/hostname
+interfaces/interfcace/description
+interfaces/interfcace/unit/description
+interfaces/interfcace/unit/family/ethernet-switching/storm-control-profile
+interfaces/interfcace/unit/family/ethernet-switching/vlan/members
+snmp/location
+forwarding-optinos/storm-control-profiles
+vlans/vlan
+vlans/vlan/description
+
+This is a case sensitive operation.
+
+Author: Ken Cope  kcope@juniper.net
+Last modified: 07.14.2023
+
+Known bugs:  
+ - 
+*/
+
+version 1.1;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns str = "http://exslt.org/strings";
+ns func extension = "http://exslt.org/functions";
+ns replacepat extension = "http://xml.juniper.net/replacepat";
+
+
+import "../import/junos.xsl";
+
+param $pattern;
+param $replace;
+
+var $arguments = {
+  <argument> {
+    <name> "pattern";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace";
+    <description> "Text to replace pattern with";
+  }
+}
+
+/* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
+/* @NAME = "post-renamed" */
+/* @DESCRIPTION = "Update fields that have a post name in them that must be updated as a result of a name change. The pattern and replace text are case sensitive */
+/* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
+/* @ISLOCAL = "false" */
+
+/* connection to the local system that we are executing this script on*/
+param $local = jcs:open();
+
+var $usage = "pattern <pattern to match> replace <text to update>";
+
+
+/* Main script */
+
+match / {
+  <op-script-results> {
+
+    /* Check that the required parameters have been entered */
+    if (jcs:empty($pattern) or jcs:empty($replace)){
+      expr jcs:output($usage);
+      expr jcs:output("Note: arguments are case sensitive!");
+      terminate("pattern and replace arguments needed");
+    }
+
+    /* Get the config and look for the pattern in it */
+    var $get-config-rpc = <get-configuration database="commited">;
+    var $config = jcs:invoke($get-config-rpc);
+
+
+    var $matched = $config//*[text()[contains(., $pattern )]]; 
+    if (not($matched)) {
+        terminate concat("Pattern ", $pattern, " did not match anything in the interesting config sections");
+    }
+    expr jcs:output("Interesting config sections contains pattern " _ $pattern, " : replacing with ", $replace);
+
+    /* Update the host-name if needed */
+    var $new-hostname = replacepat:replace-pattern($config/system/host-name, $pattern, $replace);
+    var $new-hostname-re0 = replacepat:replace-pattern($config/groups[name="re0"]/system/host-name, $pattern, $replace);
+    var $new-hostname-re1 = replacepat:replace-pattern($config/groups[name="re0"]/system/host-name, $pattern, $replace);
+
+    /* Update the snmp location if needed */
+    var $new-snmp-location = replacepat:replace-pattern($config/snmp/location, $pattern, $replace);
+
+    /* Updated config 
+    *  Check each section to see if any updates are needed in each section to prevent empty stanzas from being
+    *  propagated to the config and leading to warnings about empty config sections if nothing matches
+    */
+    var $config-updated = {
+      <configuration> {
+        /* Check hostnames in re0 and re1 groups for dual RE systems like the 9200 series */
+        if ($new-hostname-re0) {
+          <groups> {
+            <name>re0;
+            <system>{
+              <host-name>$new-hostname-re0;
+            }
+          }
+        }
+        if ($new-hostname-re1) {
+          <groups> {
+            <name>re1;
+            <system>{
+              <host-name>$new-hostname-re1;
+            }
+          }
+        }
+
+        /* Update hostname */
+        if ($new-hostname) {
+          <system> {
+            <host-name> $new-hostname;
+          }
+        }
+
+        /* Interfaces section  - check if anything needs updating*/
+        if ($config/interfaces/interface[contains(., $pattern)]) {
+          <interfaces> {
+            /* Iterate through interfaces that have a change needed */
+            for-each ($config/interfaces/interface[contains(., $pattern)]) {
+              <interface> {
+                <name>./name;
+                /* update IFD description */
+                if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                    <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                }
+                /* Iterate through each IFL */
+                for-each (./unit[contains(., $pattern)]) {
+                  <unit> { 
+                    <name>./name;
+                    /* update IFL description */
+                    if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                        <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                    }
+                    /* check ethernet switching family */
+                    if (./family/ethernet-switching[contains(., $pattern)]) {
+                      <family> {
+                        <ethernet-switching> {
+                          /* update applied storm control profiles */
+                          if (replacepat:replace-pattern(./family/ethernet-switching/storm-control/profile-name, $pattern, $replace)){
+                            <storm-control>{
+                              <profile-name>replacepat:replace-pattern(./family/ethernet-switching/storm-control/profile-name, $pattern, $replace);
+                            }
+                          }
+                          /* update any named vlans if needed */
+                          if (./family/ethernet-switching/vlan[contains(., $pattern)]) {
+                            <vlan> {
+                              for-each (./family/ethernet-switching/vlan/members) {
+                                if (replacepat:replace-pattern(., $pattern, $replace)) {
+                                  /* delete the old name and add the new name */
+                                  <members delete="delete">.;
+                                  <members>replacepat:replace-pattern(., $pattern, $replace);
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        /* Update storm control profiles */
+        if ($config/forwarding-options/storm-control-profiles[contains(., $pattern)]){
+            <forwarding-options> {
+            for-each ($config/forwarding-options/storm-control-profiles) {
+              if (replacepat:replace-pattern(./name, $pattern, $replace)) {
+                <storm-control-profiles rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)> {
+                  <name>./name;
+                }
+              }
+            }
+          }
+        }
+
+        /* check if snmp location needs updating */
+        if ($new-snmp-location) {
+          <snmp> {
+            <location> $new-snmp-location;
+          }
+        }
+
+        /* check if any vlan info needs changing */
+        if ($config/vlans[contains(., $pattern)]){
+        <vlans> {
+          /* iterate throuh all vlans */
+          for-each ($config/vlans/vlan) {
+            /* Rename a VLAN */
+            if (replacepat:replace-pattern(./name, $pattern, $replace)){
+              <vlan rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)> {
+                <name>./name;
+              }
+              /* Update description for a renamed VLAN */
+              if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                <vlan> {
+                  <name>replacepat:replace-pattern(./name, $pattern, $replace);
+                  <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                }
+              }
+            }
+            /* Update VLAN desription field only*/
+            else if (./description[(contains(., $pattern))]){
+              <vlan> {
+                <name> ./name;
+                if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                  <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                }
+              }
+            }
+          }
+        }
+        }
+      }
+    }
+
+    expr jcs:output("Updating config");
+    copy-of $config-updated;
+
+    /* Configuration commit parameters */
+    var $load-action = "merge";
+    var $log-message = concat("Post rename ", $pattern, " to ", $replace);
+    var $options := {
+      <commit-options>{
+        <log> $log-message;
+      }
+    }
+
+    /* Commit the config */
+    var $commit-results := {
+      call jcs:load-configuration( 
+        $action=$load-action,
+        $commit-options = $options,
+        $configuration = $config-updated,
+        $connection = $local
+      );
+    }
+
+    /* Check the results */
+    if ($commit-results//xnm:error) {
+      for-each ($commit-results//xnm:error) {
+        <output> message;
+      }
+    }
+    if ($commit-results//xnm:warning) {
+      for-each ($commit-results//xnm:warning) {
+        <output> message;
+        copy-of .;
+      }
+    }
+
+    /* Display commit status */
+    if ($commit-results//commit-success) {
+      expr jcs:output("Sucessfully committed changes");
+    }
+    else {
+      terminate "Exiting with errors.";
+    }
+
+    /* Display results and changes */
+    var $get-config-compare-rpc = <get-configuration compare="rollback" rollback="1">;
+    var $compare-config-results = jcs:invoke($get-config-compare-rpc);
+
+    var $changed-lines = jcs:break-lines($compare-config-results/configuration-output);
+    <output> "Changed configuration items:";
+    for-each ($changed-lines) {
+        <output> .;
+    }
+  }
+}
+
+/* function to replace a pattern in a string
+ * sets a False boolean if the pattern was not contained in the text
+ * to be searched
+ */
+function replacepat:replace-pattern ( $line, $pattern, $replace) { 
+
+    /* set a mutable variable to keep track of sucess */
+    mvar $result = 0;
+
+    /* Check that the line contains the pattern */
+    if (not (jcs:regex($pattern, $line))) {
+        set $result = -1;
+    }
+    else {
+        /* Repace the string occurrances */
+        set $result = str:replace($line, $pattern, $replace);
+    }
+
+    /* return results */
+    if ($result == -1 ){
+      /* false boolean */
+       <func:result select="false()">;
+    }
+    else {
+       result $result;
+    }
+
+}
