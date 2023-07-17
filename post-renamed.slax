@@ -10,14 +10,23 @@ snmp/location
 forwarding-optinos/storm-control-profiles
 vlans/vlan
 vlans/vlan/description
+system/login/user
+access/profile
+protocols/dot1x/authenticator/authentication-profile-name
+protocols/oam/ethernet/link-fault-management/action-profile
+protocols/oam/ethernet/link-fault-management/interace/apply-action-profile
 
 This is a case sensitive operation.
 
 Author: Ken Cope  kcope@juniper.net
-Last modified: 07.14.2023
+Last modified: 07.17.2023
 
 Known bugs:  
- - 
+ - None ATT
+
+Todo:
+
+
 */
 
 version 1.1;
@@ -55,6 +64,12 @@ var $arguments = {
 param $local = jcs:open();
 
 var $usage = "pattern <pattern to match> replace <text to update>";
+
+/* Controls for sections if they are updated or not - false() to skip, anything else to proceed*/
+var $update_user_names = false();
+/* 
+var $update_user_names = "YES";
+/* 
 
 
 /* Main script */
@@ -116,6 +131,75 @@ match / {
         if ($new-hostname) {
           <system> {
             <host-name> $new-hostname;
+          }
+        }
+
+        /* Update the user name */
+        if ($config/system/login/user/name[contains(.,$pattern)] and $update_user_names) {
+          /* Iterate through the users */
+          <system> {
+            <login> {
+              for-each ($config/system/login/user[name[contains(., $pattern)]]) {
+                <user rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)> {
+                  <name>./name;
+                }
+              }
+            }
+          }
+        }
+
+        /* 802.1x */
+        if ($config/access/profile/name[contains(.,$pattern)]) {
+          /* First the access profiles */
+          <access> {
+              /* Iterate through the access profiles */
+              for-each ($config/access/profile[name[contains(.,$pattern)]]) {
+              <profile rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)>{
+                <name>./name;
+              }
+            }
+          }
+          /* Then if it is applied under protocols */
+          if ($config/protocols/dot1x/authenticator/authentication-profile-name[contains(.,$pattern)]){
+            <protocols> {
+              <dot1x> {
+                <authenticator>{
+                  <authentication-profile-name>replacepat:replace-pattern($config/protocols/dot1x/authenticator/authentication-profile-name, $pattern, $replace);
+                }
+              }
+            }
+          }
+        }
+
+        /* Ethernet LFM */
+        if ($config/protocols/oam/ethernet/link-fault-management[contains(.,$pattern)]) {
+          <protocols> {
+            <oam> {
+              <ethernet> {
+                <link-fault-management> {
+                  /* Check any action profiles */
+                  if ($config/protocols/oam/ethernet/link-fault-management/action-profile[name[contains(., $pattern)]]){
+                    /* iterate through the action profiles */
+                    for-each ($config/protocols/oam/ethernet/link-fault-management/action-profile[name[contains(., $pattern)]]) {
+                      <action-profile rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)> {
+                        <name>./name;
+                      }
+                    }
+                    /* iterate through any interface that might have a matching action profile applied 
+                     * This has to be done as a delete, and add rather than a rename or you get a nasty commit error that the
+                     * profile doesn't exist yet
+                     */
+                    for-each ($config/protocols/oam/ethernet/link-fault-management/interface[apply-action-profile[contains(., $pattern)]]){
+                      <interface> {
+                        <name>./name;
+                        <apply-action-profile delete="delete">./apply-action-profile;
+                        <apply-action-profile>replacepat:replace-pattern(./apply-action-profile, $pattern, $replace);
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
 
