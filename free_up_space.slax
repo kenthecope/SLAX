@@ -1,9 +1,19 @@
 /* 
+
+Copyright 2023 Juniper Networks, Inc. All rights reserved.
+Licensed under the Juniper Networks Script Software License (the "License").
+You may not use this script file except in compliance with the License, which
+is located at
+http://www.juniper.net/support/legal/scriptlicense/
+Unless required by applicable law or otherwise agreed to in writing by the
+parties, software distributed under the License is distributed on an "AS IS"
+BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 This script will free up as much space as possible on an EX VC stack. It merciliessly deletes
 probably unused files and software packages.  
 
 Author: Ken Cope  kcope@juniper.net
-Last modified: 19.05.2023
+Last modified: 20.11.2023
+- 20.11.2023: Add License
 - 19.05.2023: clean out /var/log and /var/tmp beyond what request system storage cleanup does
               removes any files that are older than 2 days except active log and trace files
 - 14.02.2023: add argument "aggressiveness" to control how many packages are cleaned out, use the "lastresort" option
