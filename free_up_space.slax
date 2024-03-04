@@ -12,7 +12,8 @@ This script will free up as much space as possible on an EX VC stack. It mercili
 probably unused files and software packages.  
 
 Author: Ken Cope  kcope@juniper.net
-Last modified: 20.11.2023
+Last modified: 04.03.2024
+- 04.03.2024: replace all jcs:invoke instances with jcs:execute
 - 20.11.2023: Add License
 - 19.05.2023: clean out /var/log and /var/tmp beyond what request system storage cleanup does
               removes any files that are older than 2 days except active log and trace files
@@ -160,12 +161,12 @@ match / {
                                       }
 
         /* grab a copy of the syslog config so we don't delete any active syslog files if combing /var/log */
-        var $syslog-config = jcs:invoke( $get-syslog-config-rpc );
+        var $syslog-config = jcs:execute( $local, $get-syslog-config-rpc );
         var $syslog-files = $syslog-config/system/syslog/file/name;
         copy-of $syslog-files;
 
         /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
-        var $vc_info = jcs:invoke('get-virtual-chassis-information');
+        var $vc_info = jcs:execute( $local, 'get-virtual-chassis-information');
 
         /* loop through each member and free up space that doesnt work on all-members */
         for-each( $vc_info//member-list/member/member-id ) {
@@ -253,7 +254,7 @@ match / {
                               }
 
         /* grab a copy of the config */
-        var $configuration = jcs:invoke( $get-config-rpc );
+        var $configuration = jcs:execute( $local, $get-config-rpc );
 
         /* Save the DHCPv4 Snooping Database */
         var $cleanup_dhcpv4 = cleanup:dhcpv4($configuration);
@@ -793,7 +794,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
    mvar $tracefiles = 0;
 
    var $get-full-config-rpc = <get-configuration database="committed" inherit="inherit"> ;
-   var $config = jcs:invoke( $get-full-config-rpc);
+   var $config = jcs:execute( $local, $get-full-config-rpc);
    for-each ($config//traceoptions/file/filename ) {
         expr jcs:output( concat(" *** WARNING active tracefile: ", .) );
         set $tracefiles = 1;
