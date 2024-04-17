@@ -1,20 +1,12 @@
 /* 
-
-Copyright 2023 Juniper Networks, Inc. All rights reserved.
-Licensed under the Juniper Networks Script Software License (the "License").
-You may not use this script file except in compliance with the License, which
-is located at
-http://www.juniper.net/support/legal/scriptlicense/
-Unless required by applicable law or otherwise agreed to in writing by the
-parties, software distributed under the License is distributed on an "AS IS"
-BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 This script will free up as much space as possible on an EX VC stack. It merciliessly deletes
 probably unused files and software packages.  
 
-Author: Ken Cope  kcope@juniper.net
-Last modified: 04.03.2024
-- 04.03.2024: replace all jcs:invoke instances with jcs:execute
-- 20.11.2023: Add License
+Authors: Ken Cope  kcope@juniper.net
+         Jesse Fish jfish@juniper.net
+
+Last modified: 17.04.2024
+- 17.04.2024: added deletetion of recovery snapshots when aggresiveness is "aggressive" or "lastresort"
 - 19.05.2023: clean out /var/log and /var/tmp beyond what request system storage cleanup does
               removes any files that are older than 2 days except active log and trace files
 - 14.02.2023: add argument "aggressiveness" to control how many packages are cleaned out, use the "lastresort" option
@@ -62,7 +54,7 @@ param $aggressiveness;
 var $arguments = {
   <argument> {
     <name> "aggressiveness";
-    <description> "How aggressively do we clean out the space (standard|aggressive:lastresort)";
+    <description> "How aggressively do we clean out the space (standard|aggressive|lastresort)";
   }
 }
 
@@ -96,7 +88,7 @@ var $del_packages_aggressive := {
    <package> "old";
 } 
 
-/* packages to aggressively delete -- make sure old is the last in the list */
+/* packages to aggressively delete as a last resort -- make sure old is the last in the list */
 var $del_packages_lastresort := {
    <package> "jweb-ex";
    <package> "optional";
@@ -140,10 +132,12 @@ match / {
         /* Let the user know to what level of cleaning we are doing */
         if ( $aggressiveness == 'lastresort' ) {
             expr jcs:output("Performing a LAST RESORT disk space cleanup!");
+            expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
             expr jcs:output("YOU WILL NEED TO UPGRADE JUNOS IMMEDIATELY AFTER THIS COMPLETES!");
         }
         else if ( $aggressiveness == 'aggressive' ) {
             expr jcs:output("Performing an AGGRESSIVE disk space cleanup!");
+            expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
             expr jcs:output("This removes several software packages which usually are not needed! You may need to reboot after this finishes!");
         }
         else {
@@ -161,12 +155,12 @@ match / {
                                       }
 
         /* grab a copy of the syslog config so we don't delete any active syslog files if combing /var/log */
-        var $syslog-config = jcs:execute( $local, $get-syslog-config-rpc );
+        var $syslog-config = jcs:invoke( $get-syslog-config-rpc );
         var $syslog-files = $syslog-config/system/syslog/file/name;
         copy-of $syslog-files;
 
         /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
-        var $vc_info = jcs:execute( $local, 'get-virtual-chassis-information');
+        var $vc_info = jcs:invoke('get-virtual-chassis-information');
 
         /* loop through each member and free up space that doesnt work on all-members */
         for-each( $vc_info//member-list/member/member-id ) {
@@ -182,6 +176,9 @@ match / {
 
             /* delete non-recovery snaphosts */
             var $cleanup_snapshots = cleanup:snapshots($member);
+
+            /* delete recovery snaphosts */
+            var $cleanup_recovery = cleanup:recovery($member);
 
             /* delete seldom used junos packages that are not needed when a system is upgraded */
             var $cleanup_packages = cleanup:packages($member, $aggressiveness);
@@ -254,7 +251,7 @@ match / {
                               }
 
         /* grab a copy of the config */
-        var $configuration = jcs:execute( $local, $get-config-rpc );
+        var $configuration = jcs:invoke( $get-config-rpc );
 
         /* Save the DHCPv4 Snooping Database */
         var $cleanup_dhcpv4 = cleanup:dhcpv4($configuration);
@@ -269,7 +266,7 @@ match / {
         /* Final for warning aggressive cleanups */
         if ( $aggressiveness == 'lastresort' ) {
             expr jcs:output('Finished LAST RESORT disk space cleanup!');
-            expr jcs:output('UPGRADE JUNOS IMMEDIATELY!!!');
+            expr jcs:output('DO NOT REBOOT! UPGRADE JUNOS IMMEDIATELY!!!');
         }
         if ( $aggressiveness == 'aggressive' ) {
             expr jcs:output('Finished AGGRESSIVE disk space cleanup!');
@@ -577,16 +574,42 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
     /* vc member */
     param $member;
 
-    /* Delete non-recovery snapshots */
+    /* degree of cleaning */
+    param $aggressiveness;
+
+    if ($aggressiveness == "aggressive" || $aggressiveness == "lastrestort"){
+        /* Delete non-recovery snapshots */
+        var $snapshot_rpc = {
+            <request-snapshot> {
+                <delete> '*';
+                <member> $member;
+            }
+        }
+        expr jcs:output(" - deleting snapshots");
+        var $snapshot_result = jcs:execute($local, $snapshot_rpc);
+    }
+}
+
+/* function to delete recovery snapsnots from a member
+ * this takes the vc member as an argument
+ */ 
+<func:function name="cleanup:recovery"> {
+            
+    /* vc member */
+    param $member;
+
+    /* Delete recovery snapshots */
     var $snapshot_rpc = {
         <request-snapshot> {
-            <delete> '*';
+            <delete> 'recovery';
             <member> $member;
         }
     }
-    expr jcs:output(" - deleting snapshots");
+    expr jcs:output(" - deleting recovery");
     var $snapshot_result = jcs:execute($local, $snapshot_rpc);
 }
+
+
 
 
 /* function to do a system storage cleanup on a vc member 
@@ -794,7 +817,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
    mvar $tracefiles = 0;
 
    var $get-full-config-rpc = <get-configuration database="committed" inherit="inherit"> ;
-   var $config = jcs:execute( $local, $get-full-config-rpc);
+   var $config = jcs:invoke( $get-full-config-rpc);
    for-each ($config//traceoptions/file/filename ) {
         expr jcs:output( concat(" *** WARNING active tracefile: ", .) );
         set $tracefiles = 1;
