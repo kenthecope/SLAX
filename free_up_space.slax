@@ -5,7 +5,7 @@ probably unused files and software packages.
 Authors: Ken Cope  kcope@juniper.net
          Jesse Fish jfish@juniper.net
 
-Last modified: 17.04.2024
+Last modified: 25.07.2024
 - 25.07.2024: fixed spelling error bug for recovery snapshot deletion
 - 17.04.2024: added deletetion of recovery snapshots when aggresiveness is "aggressive" or "lastresort"
 - 19.05.2023: clean out /var/log and /var/tmp beyond what request system storage cleanup does
