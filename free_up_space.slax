@@ -4,8 +4,11 @@ probably unused files and software packages.
 
 Authors: Ken Cope  kcope@juniper.net
          Jesse Fish jfish@juniper.net
+Contributers:  Mark Misola mmisola@juniper.net
+               Peter Baumgartner pbaumgartner@juniper.net 
 
-Last modified: 05.08.2024
+Last modified: 06.08.2024
+- 06.08.2024: change all jcs:execute rpc calls to jcs:invoke
 - 05.08.2024: removed recovery snapshot deletetion as it creates a lot of follow on problems and does not
               appear to free up any extra storage space
 - 25.07.2024: fixed spelling error bug for recovery snapshot deletion
@@ -65,7 +68,7 @@ var $arguments = {
 /* @NAME = "FreeUpSpace" */
 /* @DESCRIPTION = "Mercilessly Free Up Space on an EX VC Stack" */
 /* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
-/* @ISLOCAL = "false" */
+/* @ISLOCAL = "true" */
 
 /* connection to the local system that we are executing this script on*/
 param $local = jcs:open();
@@ -192,7 +195,7 @@ match / {
                 }
             }
 
-            var $home_files_result = jcs:execute($local, $home_files_rpc);
+            var $home_files_result = jcs:invoke($local, $home_files_rpc);
             expr jcs:output(concat( " - cleaning member ", $member, " directory ", $home_files_result//directory/directory-name));
 
             /* Remove any files in /var/home */
@@ -214,7 +217,7 @@ match / {
                        <detail>;
                    }
                }
-               var $user_files_result = jcs:execute($local, $user_files_rpc);
+               var $user_files_result = jcs:invoke($local, $user_files_rpc);
                for-each ($user_files_result//directory-list/directory/file-information) {
                    expr jcs:output(concat( " - cleaning member ", $member, " directory ", $directory));
                    /* Delete files */
@@ -304,7 +307,7 @@ function cleanup:cleanup-dir-age ( $fpc, $directory, $preserve, $system-syslog-f
             <detail>;
         }
     }
-    var $cleanup_files_result = jcs:execute($local, $cleanup_files_rpc);
+    var $cleanup_files_result = jcs:invoke($local, $cleanup_files_rpc);
 
     /* check if looking at the log dir */
     if ( $directory == "/var/log" ){
@@ -368,7 +371,7 @@ function cleanup:cleanup-dir ( $fpc, $directory) {
             <detail>;
         }
     }
-    var $cleanup_files_result = jcs:execute($local, $cleanup_files_rpc);
+    var $cleanup_files_result = jcs:invoke($local, $cleanup_files_rpc);
 
     /* iterate through the files list */
     for-each ($cleanup_files_result//directory-list/directory/file-information) {
@@ -380,7 +383,7 @@ function cleanup:cleanup-dir ( $fpc, $directory) {
                     <recurse>;
                 }
             }
-            var $cleandelete_result = jcs:execute($local, $cleandelete_dir_rpc);
+            var $cleandelete_result = jcs:invoke($local, $cleandelete_dir_rpc);
             if ($cleandelete_result//error) {
                 for-each ($cleandelete_result//error) {
                     expr jcs:output(concat(" -- error ", $fpc, $subdir, "/", ./file-name, ": ", ./message ));
@@ -432,7 +435,7 @@ function cleanup:delete-dir ( $fpc, $file-information, $subdir) {
                     <recurse>;
                 }
             }
-            var $delete_result = jcs:execute($local, $delete_dir_rpc);
+            var $delete_result = jcs:invoke($local, $delete_dir_rpc);
             if ($delete_result//error) {
                 for-each ($delete_result//error) {
                     expr jcs:output(concat(" -- error ", $fpc, $subdir, "/", $file-information/file-name, ": ", ./message ));
@@ -473,7 +476,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
                         <path> concat($fpc, $directory, "/", $file-information/file-name);
                 }
             }
-            var $delete_result = jcs:execute($local, $delete_rpc);
+            var $delete_result = jcs:invoke($local, $delete_rpc);
             if ($delete_result//error) {
                 for-each ($delete_result//error) {
                     expr jcs:output(concat(" -- error ", $fpc, $directory, "/", $file-information/file-name, ": ", ./message ));
@@ -527,7 +530,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
 		    <member> $member;
 		}
  	    }
-	    var $result = jcs:execute($local,$rpc);
+	    var $result = jcs:invoke($local,$rpc);
 
         }
         /* do a semi empty commit (just a commnet) to force a db sync in /var/run/db */
@@ -543,7 +546,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
 		    <member> $member;
 		}
  	    }
-	    var $result = jcs:execute($local,$rpc);
+	    var $result = jcs:invoke($local,$rpc);
 
         }
         /* do a semi empty commit (just a commnet) to force a db sync in /var/run/db */
@@ -559,7 +562,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
 		    <member> $member;
 		}
  	    }
-	    var $result = jcs:execute($local,$rpc);
+	    var $result = jcs:invoke($local,$rpc);
         }
     }
 
@@ -586,7 +589,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
             }
         }
         expr jcs:output(" - deleting snapshots");
-        var $snapshot_result = jcs:execute($local, $snapshot_rpc);
+        var $snapshot_result = jcs:invoke($local, $snapshot_rpc);
     }
 }
 
@@ -607,7 +610,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
             }
         }
         expr jcs:output(" - deleting recovery");
-        var $snapshot_result = jcs:execute($local, $snapshot_rpc);
+        var $snapshot_result = jcs:invoke($local, $snapshot_rpc);
     }
 }
 
@@ -627,7 +630,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
         <member> $member;
     }
     expr jcs:output(" - system storage cleanup");
-    var $cleanup_result = jcs:execute($local, $cleanup_rpc);
+    var $cleanup_result = jcs:invoke($local, $cleanup_rpc);
     for-each ( $cleanup_result//multi-routing-engine-item/system-storage-cleanup-information/file-list/file ) {
         expr jcs:output(concat(' -- removed ', ./file-name, ' : ', ./size, ' bytes'));
     }
@@ -650,7 +653,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
             <path> concat($fpc, '/var/log/shmlog/arg');
         }
     }
-    var $shmlog_files_result = jcs:execute($local, $shmlog_files_rpc);
+    var $shmlog_files_result = jcs:invoke($local, $shmlog_files_rpc);
 
     for-each ($shmlog_files_result//directory-list/directory/file-information) {
        var $delete-file-result = cleanup:delete-file($fpc, ., "/var/log/shmlog/arg");
@@ -685,7 +688,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
                 <filename> $dhcp_snooping_file;
             }
         }
-        var $save_dhcp_security_snooping_result = jcs:execute($local, $save_dhcp_security_snooping_rpc);
+        var $save_dhcp_security_snooping_result = jcs:invoke($local, $save_dhcp_security_snooping_rpc);
         expr jcs:output( " - DHCPv4 snooping file saved!" );
     }
     else {
@@ -723,7 +726,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
                 <filename> $dhcpv6_snooping_file;
             }
         }
-        var $save_dhcpv6_security_snooping_result = jcs:execute($local, $save_dhcpv6_security_snooping_rpc);
+        var $save_dhcpv6_security_snooping_result = jcs:invoke($local, $save_dhcpv6_security_snooping_rpc);
         expr jcs:output( " - DHCPv6 snooping file saved!" );
     }
     else {
@@ -758,7 +761,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
                 <filename> $slaac_snooping_file;
             }
         }
-        var $save_slaac_snoop_file_result = jcs:execute($local, $save_slaac_snoop_file_rpc);
+        var $save_slaac_snoop_file_result = jcs:invoke($local, $save_slaac_snoop_file_rpc);
         expr jcs:output( " - SLAAC snooping file saved!" );
     }
     else {
@@ -770,7 +773,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
     var $request_dhcp_regenerate_persistent-file_rpc = {
         <request-dhcp-regenerate-persistent-file>;
     }
-    var $request_dhcp_regenerate_persistent-file_result = jcs:execute($local, $request_dhcp_regenerate_persistent-file_rpc);
+    var $request_dhcp_regenerate_persistent-file_result = jcs:invoke($local, $request_dhcp_regenerate_persistent-file_rpc);
     expr jcs:output( " - regenerated!" );
 
 }
