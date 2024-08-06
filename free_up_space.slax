@@ -68,7 +68,7 @@ var $arguments = {
 /* @NAME = "FreeUpSpace" */
 /* @DESCRIPTION = "Mercilessly Free Up Space on an EX VC Stack" */
 /* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
-/* @ISLOCAL = "true" */
+/* @ISLOCAL = "false" */
 
 /* connection to the local system that we are executing this script on*/
 param $local = jcs:open();
