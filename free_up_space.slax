@@ -6,8 +6,10 @@ Authors: Ken Cope  kcope@juniper.net
          Jesse Fish jfish@juniper.net
 Contributers:  Mark Misola mmisola@juniper.net
                Peter Baumgartner pbaumgartner@juniper.net 
+               Ed Schaller eschaller@juniper.net
 
-Last modified: 07.08.2024
+Last modified: 15.08.2024
+- 15.08.2024: fix bug where extra arguments were being called for dhcp cleanup functions
 - 07.08.2024: change all jcs:invoke rpc calls to jcs:execute calling the local session that was opened with jcs:open
               fix regression for Junos Space/Juise
 - 06.08.2024: change all jcs:execute rpc calls to jcs:invoke
@@ -259,13 +261,13 @@ match / {
         var $configuration = jcs:execute( $local, $get-config-rpc );
 
         /* Save the DHCPv4 Snooping Database */
-        var $cleanup_dhcpv4 = cleanup:dhcpv4($local,  $configuration);
+        var $cleanup_dhcpv4 = cleanup:dhcpv4( $configuration);
 
         /* Save the DHCPv6 Snooping Database */
-        var $cleanup_dhcpv6 = cleanup:dhcpv6($local, $configuration);
+        var $cleanup_dhcpv6 = cleanup:dhcpv6( $configuration);
 
         /* Save the SLAAC Snooping Database */
-        var $cleanup_slaac = cleanup:slaac($local, $configuration);
+        var $cleanup_slaac = cleanup:slaac( $configuration);
 
 
         /* Final for warning aggressive cleanups */
@@ -822,7 +824,7 @@ function cleanup:delete-file ( $fpc, $file-information, $directory) {
    mvar $tracefiles = 0;
 
    var $get-full-config-rpc = <get-configuration database="committed" inherit="inherit"> ;
-   var $config = jcs:execute( $get-full-config-rpc);
+   var $config = jcs:execute( $local, $get-full-config-rpc);
    for-each ($config//traceoptions/file/filename ) {
         expr jcs:output( concat(" *** WARNING active tracefile: ", .) );
         set $tracefiles = 1;
