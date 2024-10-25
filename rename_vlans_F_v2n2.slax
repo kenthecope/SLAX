@@ -240,7 +240,7 @@ match / {
                   }
                 }
               }  /* KC closing brace for innter for-each */
-            } /* KC closing brace for outer for-each
+            } /* KC closing brace for outer for-each */
           }
         }  /* KC closing brace for if ($config/vlans[contains(., $repalcements)]) */
       }
