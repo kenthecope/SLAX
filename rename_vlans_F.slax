@@ -1,0 +1,191 @@
+version 1.1;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns str = "http://exslt.org/strings";
+ns func extension = "http://exslt.org/functions";
+ns replacepat extension = "http://xml.juniper.net/replacepat";
+
+
+
+
+import "../import/junos.xsl";
+
+param $pattern;
+param $replace;
+
+var $arguments = {
+  <argument> {
+    <name> "pattern";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace";
+    <description> "Text to replace pattern with";
+  }
+}
+
+/* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
+/* @NAME = "post-renamed" */
+/* @DESCRIPTION = "Update fields that have a post name in them that must be updated as a result of a name change. The pattern and replace text are case sensitive */
+/* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
+/* @ISLOCAL = "false" */
+
+/* connection to the local system that we are executing this script on*/
+param $local = jcs:open();
+
+var $usage = "pattern <pattern to match> replace <text to update>";
+
+/* Controls for sections if they are updated or not - false() to skip, anything else to proceed*/
+var $update_user_names = false();
+/* 
+var $update_user_names = "YES";
+/* 
+
+
+/* Main script */
+
+match / {
+  <op-script-results> {
+
+    /* Check that the required parameters have been entered */
+    if (jcs:empty($pattern) or jcs:empty($replace)){
+      expr jcs:output($usage);
+      expr jcs:output("Note: arguments are case sensitive!");
+      terminate("pattern and replace arguments needed");
+    }
+
+    /* Get the config and look for the pattern in it */
+    var $get-config-rpc = <get-configuration database="commited">;
+    var $config = jcs:invoke($get-config-rpc);
+
+
+    var $matched = $config//*[text()[contains(., $pattern )]]; 
+    if (not($matched)) {
+        terminate concat("Pattern ", $pattern, " did not match anything in the interesting config sections");
+    }
+    expr jcs:output("Interesting config sections contains pattern " _ $pattern, " : replacing with ", $replace);
+
+    
+    /* Updated config 
+    *  Check each section to see if any updates are needed in each section to prevent empty stanzas from being
+    *  propagated to the config and leading to warnings about empty config sections if nothing matches
+    */
+    var $config-updated = {
+      <configuration> {         
+        /* check if any vlan info needs changing */
+        if ($config/vlans[contains(., $pattern)]){
+        <vlans> {
+          /* iterate throuh all vlans */
+          for-each ($config/vlans/vlan) {
+            /* Rename a VLAN */
+            if (replacepat:replace-pattern(./name, $pattern, $replace)){
+              <vlan rename="rename" name=replacepat:replace-pattern(./name, $pattern, $replace)> {
+                <name>./name;
+              }
+              /* Update description for a renamed VLAN */
+              if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                <vlan> {
+                  <name>replacepat:replace-pattern(./name, $pattern, $replace);
+                  <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                }
+              }
+            }
+            /* Update VLAN desription field only*/
+            else if (./description[(contains(., $pattern))]){
+              <vlan> {
+                <name> ./name;
+                if (replacepat:replace-pattern(./description, $pattern, $replace)) {
+                  <description>replacepat:replace-pattern(./description, $pattern, $replace);
+                }
+              }
+            }
+          }
+        }
+        }
+      }
+    }
+
+    expr jcs:output("Updating config");
+    copy-of $config-updated;
+
+    /* Configuration commit parameters */
+    var $load-action = "merge";
+    var $log-message = concat("Post rename ", $pattern, " to ", $replace);
+    var $options := {
+      <commit-options>{
+        <log> $log-message;
+      }
+    }
+
+    /* Commit the config */
+    var $commit-results := {
+      call jcs:load-configuration( 
+        $action=$load-action,
+        $commit-options = $options,
+        $configuration = $config-updated,
+        $connection = $local
+      );
+    }
+
+    /* Check the results */
+    if ($commit-results//xnm:error) {
+      for-each ($commit-results//xnm:error) {
+        <output> message;
+      }
+    }
+    if ($commit-results//xnm:warning) {
+      for-each ($commit-results//xnm:warning) {
+        <output> message;
+        copy-of .;
+      }
+    }
+
+    /* Display commit status */
+    if ($commit-results//commit-success) {
+      expr jcs:output("Sucessfully committed changes");
+    }
+    else {
+      terminate "Exiting with errors.";
+    }
+
+    /* Display results and changes */
+    var $get-config-compare-rpc = <get-configuration compare="rollback" rollback="1">;
+    var $compare-config-results = jcs:invoke($get-config-compare-rpc);
+
+    var $changed-lines = jcs:break-lines($compare-config-results/configuration-output);
+    <output> "Changed configuration items:";
+    for-each ($changed-lines) {
+        <output> .;
+    }
+  }
+}
+
+/* function to replace a pattern in a string
+ * sets a False boolean if the pattern was not contained in the text
+ * to be searched
+ */
+function replacepat:replace-pattern ( $line, $pattern, $replace) { 
+
+    /* set a mutable variable to keep track of sucess */
+    mvar $result = 0;
+
+    /* Check that the line contains the pattern */
+    if (not (jcs:regex($pattern, $line))) {
+        set $result = -1;
+    }
+    else {
+        /* Repace the string occurrances */
+        set $result = str:replace($line, $pattern, $replace);
+    }
+
+    /* return results */
+    if ($result == -1 ){
+      /* false boolean */
+       <func:result select="false()">;
+    }
+    else {
+       result $result;
+    }
+
+}

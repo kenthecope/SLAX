@@ -1,0 +1,332 @@
+version 1.1;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns str = "http://exslt.org/strings";
+ns func extension = "http://exslt.org/functions";
+ns replacepat extension = "http://xml.juniper.net/replacepat";
+
+
+
+
+import "../import/junos.xsl";
+
+param $pattern1;
+param $replace1;
+param $pattern2;
+param $replace2;
+param $pattern3;
+param $replace3;
+param $pattern4;
+param $replace4;
+param $pattern5;
+param $replace5;
+param $pattern6;
+param $replace6;
+param $pattern7;
+param $replace7;
+param $pattern8;
+param $replace8;
+
+var $arguments = {
+  <argument> {
+    <name> "pattern1";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace1";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern2";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace2";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern3";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace3";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern4";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace4";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern5";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace5";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern6";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace6";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern7";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace7";
+    <description> "Text to replace pattern with";
+  }
+  <argument> {
+    <name> "pattern8";
+    <description> "Pattern to match";
+  }
+  <argument> {
+    <name> "replace8";
+    <description> "Text to replace pattern with";
+  }
+}
+
+/* KC: Make this a node-set with the := operater so we an iterate over it with for-each */
+var $replacements := {
+  <parameter> {
+    <pattern> "pattern1";
+    <replace> "replace1";
+  }
+  <parameter> {
+    <pattern> "pattern2";
+    <replace> "replace2";
+  }
+  <parameter> {
+    <pattern> "pattern3";
+    <replace> "replace3";
+  }
+  <parameter> {
+    <pattern> "pattern4";
+    <replace> "replace4";
+  }
+  <parameter> {
+    <pattern> "pattern5";
+    <replace> "replace5";
+  }
+  <parameter> {
+    <pattern> "pattern6";
+    <replace> "replace6";
+  }
+  <parameter> {
+    <pattern> "pattern7";
+    <replace> "replace7";
+  }
+  <parameter> {
+    <pattern> "pattern8";
+    <replace> "replace8";
+  }
+}
+
+/* Junos Space annotations: https://www.juniper.net/documentation/us/en/software/junos-space21.2/junos-space-workspaces/topics/concept/scripts-annotations.html */
+/* @NAME = "post-renamed" */
+/* @DESCRIPTION = "Update fields that have a post name in them that must be updated as a result of a name change. The pattern and replace text are case sensitive */
+/* ISLOCAL: This annotation is used to define whether the script is to be executed locally or staged on the device.  */
+/* @ISLOCAL = "false" */
+
+/* connection to the local system that we are executing this script on*/
+param $local = jcs:open();
+
+var $usage = "pattern <pattern to match> replace <text to update>";
+
+/* Controls for sections if they are updated or not - false() to skip, anything else to proceed*/
+var $update_user_names = false();
+/* 
+var $update_user_names = "YES";
+/* 
+
+
+/* Main script */
+
+match / {
+  <op-script-results> {
+
+    /* Check that the required parameters have been entered */
+    if (jcs:empty($arguments) or jcs:empty($replacements)){
+      expr jcs:output($usage);
+      expr jcs:output("Note: arguments are case sensitive!");
+      terminate("pattern and replace arguments needed");
+    }
+
+    /* Get the config and look for the pattern in it */
+    var $get-config-rpc = <get-configuration database="commited">;
+    var $config = jcs:invoke($get-config-rpc);
+
+
+    var $matched = $config//*[text()[contains(., $pattern1 )]]; 
+    if (not($matched)) {
+        terminate concat("Pattern ", $arguments, " did not match anything in the interesting config sections");
+    }
+    /* expr jcs:output("Interesting config sections contains pattern " _ $arguments, " : replacing with ", $replacements); */
+
+    
+    /* Updated config 
+    *  Check each section to see if any updates are needed in each section to prevent empty stanzas from being
+    *  propagated to the config and leading to warnings about empty config sections if nothing matches
+    */
+
+    /* KC:  take a look at the $replacements node-set in the output with op <script> | display xml */ 
+    copy-of $replacements;
+
+    /* KC: Test loop to check our node-set  */
+    for-each ($config/vlans/vlan) {
+      /* KC: cast the vlan name to a variable so we can reference it in the next loop */
+      var $test-vlan-name = ./name;
+      expr jcs:output(concat("TEST $test-vlan-name:", $test-vlan-name ));
+      for-each ($replacements/parameter) {
+        expr jcs:output(concat(" - TEST NODE:", $test-vlan-name, " ::: ", ./pattern, " : ", ./replace ));
+      }
+    }
+
+    /* KC: loop through each pattern in the vlans config section to see if anything needs to be replaced
+           the results will be saved as a boolean for testing within the construction of $config-updated
+           to see if we even need to make a <vlans> secion of the config
+    */
+    mvar $vlans-needs-replacements := {};   /* Empty node set for truth testing, this is an mvar to we can change it */
+    for-each ($replacements/parameter) {
+      if ($config/vlans[contains(., ./pattern)]){
+          expr jcs:output(concat("vlans has:" , ./pattern ));
+          /* add to the node-set  so we get a true when testing it for emptyness */
+          append $vlans-needs-replacements += <pattern> {
+            <name>./pattern;
+          }
+      }
+    }
+
+    /* KC: Construct a new config section with any changes to VLAN names */
+    var $config-updated = {
+      <configuration> {         
+        /* check if any vlan info needs to be updated */
+        if ($vlans-needs-replacements) {
+          <vlans> {   /* KC for testing make this node name something that wont commit like <BOMBvlans>, so we dont have to keep doing rollbacks */
+            /* KC: loop through each vlan */
+            for-each ($config/vlans/vlan) {
+              /* KC iterate through each pattern in the repalcements node-set */
+              var $vlan-name = ./name;     /* KC: cast the vlan name to a variable so we can reference it in the next loop  */
+              var $vlan-desc = ./description;     /* KC: cast the vlan description to a variable so we can reference it in the next loop  */
+              for-each ($replacements/parameter) {
+                expr jcs:output(concat(" - TEST VLAN NAME RENAME:", $vlan-name, " ::: ", ./pattern, " : ", ./replace ));
+                if (replacepat:replace-pattern($vlan-name, ./pattern, ./replacement)){
+                  expr jcs:output(concat(" -- RENAME VLAN TEST MATCHED:", $vlan-name, " ::: ", ./pattern, " : ", ./replace ));
+                  <vlan rename="rename" name=replacepat:replace-pattern($vlan-name, ./pattern, ./replace)> {
+                    <name>$vlan-name;
+                  }
+                  /* Update description for a renamed VLAN */
+                  if (replacepat:replace-pattern($vlan-desc, ./pattern, ./replace)){
+                    <vlan> {
+                      <name>replacepat:replace-pattern($vlan-name, ./pattern, ./replace);
+                      <description>replacepat:replace-pattern($vlan-desc, ./pattern, ./replace);
+                    }
+                  }
+                }
+                /* Update VLAN desription field only in case the descripton has the pattern but the name does not*/
+                else if ($vlan-desc[(contains(., ./pattern))]){
+                  <vlan> {
+                    <name>$vlan-name;
+                    <description>replacepat:replace-pattern($vlan-desc, ./pattern, ./replace);
+                  }
+                }
+              }  /* KC closing brace for innter for-each */
+            } /* KC closing brace for outer for-each
+          }
+        }  /* KC closing brace for if ($config/vlans[contains(., $repalcements)]) */
+      }
+    }
+
+    expr jcs:output("Updating config");
+    copy-of $config-updated;
+
+    /* Configuration commit parameters */
+    var $load-action = "merge";
+    /* KC: just make this a simple string */
+    var $log-message = "renaming VLANs";
+    var $options := {
+      <commit-options>{
+         <log> $log-message;
+      }
+    }
+
+    /* Commit the config */
+    var $commit-results := {
+      call jcs:load-configuration( 
+        $action=$load-action,
+        $commit-options = $options,
+        $configuration = $config-updated,
+        $connection = $local
+      );
+    }
+
+    /* Check the results */
+    if ($commit-results//xnm:error) {
+      for-each ($commit-results//xnm:error) {
+        <output> message;
+      }
+    }
+    if ($commit-results//xnm:warning) {
+      for-each ($commit-results//xnm:warning) {
+        <output> message;
+        copy-of .;
+      }
+    }
+
+    /* Display commit status */
+    if ($commit-results//commit-success) {
+      expr jcs:output("Sucessfully committed changes");
+    }
+    else {
+      terminate "Exiting with errors.";
+    }
+
+    /* Display results and changes */
+    var $get-config-compare-rpc = <get-configuration compare="rollback" rollback="1">;
+    var $compare-config-results = jcs:invoke($get-config-compare-rpc);
+
+    var $changed-lines = jcs:break-lines($compare-config-results/configuration-output);
+    <output> "Changed configuration items:";
+    for-each ($changed-lines) {
+        <output> .;
+    }
+  }
+}
+
+/* function to replace a pattern in a string
+ * sets a False boolean if the pattern was not contained in the text
+ * to be searched
+ */
+function replacepat:replace-pattern ( $line, $arguments, $replacements) { 
+
+    /* set a mutable variable to keep track of sucess */
+    mvar $result = 0;
+
+    /* Check that the line contains the pattern */
+    if (not (jcs:regex($arguments, $line))) {
+        set $result = -1;
+    }
+    else {
+        /* Repace the string occurrances */
+        set $result = str:replace($line, $arguments, $replacements);
+    }
+
+    /* return results */
+    if ($result == -1 ){
+      /* false boolean */
+       <func:result select="false()">;
+    }
+    else {
+       result $result;
+    }
+
+}
