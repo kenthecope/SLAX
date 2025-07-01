@@ -4,11 +4,12 @@ probably unused files and software packages.
 
 Authors: Ken Cope  kcope@juniper.net
          Jesse Fish jfish@juniper.net
+         Ed Schaller eschaller@juniper.net
 Contributers:  Mark Misola mmisola@juniper.net
-               Peter Baumgartner pbaumgartner@juniper.net 
-               Ed Schaller eschaller@juniper.net
+               Peter Baumgartner pbaumgartner@juniper.net
 
-Last modified: 15.08.2024
+Last modified: 25.06.2025
+- 25.06.2025: put in a hardware check to prevent the script being run on non-intended hardware such as ex4600
 - 15.08.2024: fix bug where extra arguments were being called for dhcp cleanup functions
 - 07.08.2024: change all jcs:invoke rpc calls to jcs:execute calling the local session that was opened with jcs:open
               fix regression for Junos Space/Juise
@@ -139,150 +140,159 @@ var $max_age = 86401;
 
 match / {
     <op-script-results> {
-        /* Let the user know to what level of cleaning we are doing */
-        if ( $aggressiveness == 'lastresort' ) {
-            expr jcs:output("Performing a LAST RESORT disk space cleanup!");
-            expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
-            expr jcs:output("YOU WILL NEED TO UPGRADE JUNOS IMMEDIATELY AFTER THIS COMPLETES!");
-        }
-        else if ( $aggressiveness == 'aggressive' ) {
-            expr jcs:output("Performing an AGGRESSIVE disk space cleanup!");
-            expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
-            expr jcs:output("This removes several software packages which usually are not needed! You may need to reboot after this finishes!");
-        }
-        else {
-            expr jcs:output("Performing a standard disk space cleanup!");
-        }
+        /* Testing model compatibility */
+        if (contains($product, "ex3400") || contains($product, "ex2300")){
+            expr jcs:output(concat("Your device model is : ",$product," and is compatible with this script"));
+            /* Let the user know to what level of cleaning we are doing */
+            if ( $aggressiveness == 'lastresort' ) {
+                expr jcs:output("Performing a LAST RESORT disk space cleanup!");
+                expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
+                expr jcs:output("YOU WILL NEED TO UPGRADE JUNOS IMMEDIATELY AFTER THIS COMPLETES!");
+            }
+            else if ( $aggressiveness == 'aggressive' ) {
+                expr jcs:output("Performing an AGGRESSIVE disk space cleanup!");
+                expr jcs:output("BEWARE: This deletes the recovery snapshot!!!!");
+                expr jcs:output("This removes several software packages which usually are not needed! You may need to reboot after this finishes!");
+            }
+            else {
+                expr jcs:output("Performing a standard disk space cleanup!");
+            }
 
-        /* Get the active syslog files */
-        expr jcs:output( "Querying configuration to find active syslog files:" );
-        var $get-syslog-config-rpc = <get-configuration database="committed" inherit="inherit"> {
-                                         <configuration> {
-                                             <system> {
-                                                 <syslog>;
-                                             }
-                                         }
-                                      }
+            /* Get the active syslog files */
+            expr jcs:output( "Querying configuration to find active syslog files:" );
+            var $get-syslog-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                            <configuration> {
+                                                <system> {
+                                                    <syslog>;
+                                                }
+                                            }
+                                        }
 
-        /* grab a copy of the syslog config so we don't delete any active syslog files if combing /var/log */
-        var $syslog-config = jcs:execute( $local, $get-syslog-config-rpc );
-        var $syslog-files = $syslog-config/system/syslog/file/name;
-        copy-of $syslog-files;
+            /* grab a copy of the syslog config so we don't delete any active syslog files if combing /var/log */
+            var $syslog-config = jcs:execute( $local, $get-syslog-config-rpc );
+            var $syslog-files = $syslog-config/system/syslog/file/name;
+            copy-of $syslog-files;
 
-        /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
-        var $vc_info = jcs:execute($local, 'get-virtual-chassis-information');
+            /* Get the member id  of the virtual chassis to loop through some cleanup commands on each VC member */
+            var $vc_info = jcs:execute($local, 'get-virtual-chassis-information');
 
-        /* loop through each member and free up space that doesnt work on all-members */
-        for-each( $vc_info//member-list/member/member-id ) {
-            /* strip any spaces out */
-            var $member = translate(., ' ', '');
-            var $fpc = concat ('fpc', $member, ':');
-            expr jcs:output(concat("Freeing Space on VC member: ", $member));
+            /* loop through each member and free up space that doesnt work on all-members */
+            for-each( $vc_info//member-list/member/member-id ) {
+                /* strip any spaces out */
+                var $member = translate(., ' ', '');
+                var $fpc = concat ('fpc', $member, ':');
+                expr jcs:output(concat("Freeing Space on VC member: ", $member));
 
-            /* delete seldom used junos packages that are not needed when a system is upgraded */
+                /* delete seldom used junos packages that are not needed when a system is upgraded */
 
-            /* system storage cleanup */
-            var $cleanup_storage = cleanup:storage($member);
+                /* system storage cleanup */
+                var $cleanup_storage = cleanup:storage($member);
 
-            /* delete non-recovery snaphosts */
-            var $cleanup_snapshots = cleanup:snapshots($member);
+                /* delete non-recovery snaphosts */
+                var $cleanup_snapshots = cleanup:snapshots($member);
 
-            /* delete seldom used junos packages that are not needed when a system is upgraded */
-            var $cleanup_packages = cleanup:packages($member, $aggressiveness);
+                /* delete seldom used junos packages that are not needed when a system is upgraded */
+                var $cleanup_packages = cleanup:packages($member, $aggressiveness);
 
 
-            /* Delete all files in logged in all users home dirs */
-            var $home_files_rpc = {
-                <file-list> {
-                    <path> concat($fpc, "/var/home/");
-                    <detail>;
+                /* Delete all files in logged in all users home dirs */
+                var $home_files_rpc = {
+                    <file-list> {
+                        <path> concat($fpc, "/var/home/");
+                        <detail>;
+                    }
                 }
+
+                var $home_files_result = jcs:execute($local, $home_files_rpc);
+                expr jcs:output(concat( " - cleaning member ", $member, " directory ", $home_files_result//directory/directory-name));
+
+                /* Remove any files in /var/home */
+                for-each ($home_files_result//directory-list/directory/file-information) {
+                /* Files in /var/home */
+                var $delete-file-result = cleanup:delete-file($fpc, ., "/var/home");
+                }
+
+                /* Remove all files and subdirs in the /var/home folder except ssh related items */
+                for-each ($home_files_result//directory-list/directory/file-information[file-directory]) {
+                /* directories in /var/home */
+                /* save the sub directory name for later use */
+                var $subdir = ./file-name;
+                var $directory = concat("/var/home/", $subdir, "/");
+                /* Now list all of the contents of each of these subdirs */
+                var $user_files_rpc = {
+                    <file-list> {
+                        <path> concat($fpc, "/var/home/", $subdir);
+                        <detail>;
+                    }
+                }
+                var $user_files_result = jcs:execute($local, $user_files_rpc);
+                for-each ($user_files_result//directory-list/directory/file-information) {
+                    expr jcs:output(concat( " - cleaning member ", $member, " directory ", $directory));
+                    /* Delete files */
+                    var $delete_subdir_files_result = cleanup:delete-file($fpc, ., $directory);
+                    /* Recursively delete directories */
+                    var $delete_subdirs_result = cleanup:delete-dir($fpc, ., $subdir);
+                }
+                }
+
+                /* Delete the SHMLOG contents */
+                for-each ($cleanup_dirs/directory) {
+                    expr jcs:output(concat( " - cleaning member ", $member, " directory ", .));
+                    var $delete_extra_dir_result = cleanup:cleanup-dir($fpc, .);
+                    /* var $cleanup_shmlog = cleanup:shmlog($fpc); */
+                }
+
+                /* Delete files in /var/log */ 
+                expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/log"));
+                var $delete_var_log_files_result = cleanup:cleanup-dir-age($fpc, "/var/log", $preserve_var_log, $syslog-files, $max_age);
+
+                /* Delete files in /var/tmp */ 
+                expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/tmp"));
+                var $delete_var_tmp_files_result = cleanup:cleanup-dir-age($fpc, "/var/tmp", $preserve_var_tmp, $syslog-files, $max_age);
             }
 
-            var $home_files_result = jcs:execute($local, $home_files_rpc);
-            expr jcs:output(concat( " - cleaning member ", $member, " directory ", $home_files_result//directory/directory-name));
+            /* Save any services that use some sort of persistent file storage */
+            expr jcs:output( "Querying configuration to find persistant storage locations:" );
+            var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
+                                    <configuration> {
+                                        <system> {
+                                            <processes>;
+                                        }
+                                    }
+                                }
 
-            /* Remove any files in /var/home */
-            for-each ($home_files_result//directory-list/directory/file-information) {
-               /* Files in /var/home */
-               var $delete-file-result = cleanup:delete-file($fpc, ., "/var/home");
+            /* grab a copy of the config */
+            var $configuration = jcs:execute( $local, $get-config-rpc );
+
+            /* Save the DHCPv4 Snooping Database */
+            var $cleanup_dhcpv4 = cleanup:dhcpv4( $configuration);
+
+            /* Save the DHCPv6 Snooping Database */
+            var $cleanup_dhcpv6 = cleanup:dhcpv6( $configuration);
+
+            /* Save the SLAAC Snooping Database */
+            var $cleanup_slaac = cleanup:slaac( $configuration);
+
+
+            /* Final for warning aggressive cleanups */
+            if ( $aggressiveness == 'lastresort' ) {
+                expr jcs:output('Finished LAST RESORT disk space cleanup!');
+                expr jcs:output('DO NOT REBOOT! UPGRADE JUNOS IMMEDIATELY!!!');
+            }
+            if ( $aggressiveness == 'aggressive' ) {
+                expr jcs:output('Finished AGGRESSIVE disk space cleanup!');
+                expr jcs:output('You may need to reboot the device!!!');
             }
 
-            /* Remove all files and subdirs in the /var/home folder except ssh related items */
-            for-each ($home_files_result//directory-list/directory/file-information[file-directory]) {
-               /* directories in /var/home */
-               /* save the sub directory name for later use */
-               var $subdir = ./file-name;
-               var $directory = concat("/var/home/", $subdir, "/");
-               /* Now list all of the contents of each of these subdirs */
-               var $user_files_rpc = {
-                   <file-list> {
-                       <path> concat($fpc, "/var/home/", $subdir);
-                       <detail>;
-                   }
-               }
-               var $user_files_result = jcs:execute($local, $user_files_rpc);
-               for-each ($user_files_result//directory-list/directory/file-information) {
-                   expr jcs:output(concat( " - cleaning member ", $member, " directory ", $directory));
-                   /* Delete files */
-                   var $delete_subdir_files_result = cleanup:delete-file($fpc, ., $directory);
-                   /* Recursively delete directories */
-                   var $delete_subdirs_result = cleanup:delete-dir($fpc, ., $subdir);
-               }
-            }
-
-            /* Delete the SHMLOG contents */
-            for-each ($cleanup_dirs/directory) {
-                expr jcs:output(concat( " - cleaning member ", $member, " directory ", .));
-                var $delete_extra_dir_result = cleanup:cleanup-dir($fpc, .);
-                /* var $cleanup_shmlog = cleanup:shmlog($fpc); */
-            }
-
-            /* Delete files in /var/log */ 
-            expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/log"));
-            var $delete_var_log_files_result = cleanup:cleanup-dir-age($fpc, "/var/log", $preserve_var_log, $syslog-files, $max_age);
-
-            /* Delete files in /var/tmp */ 
-            expr jcs:output(concat( " - cleaning member ", $member, " directory ", "/var/tmp"));
-            var $delete_var_tmp_files_result = cleanup:cleanup-dir-age($fpc, "/var/tmp", $preserve_var_tmp, $syslog-files, $max_age);
+            var $tracefiles = cleanup:report-tracefiles();
+    
+            expr jcs:close($local);
         }
-
-        /* Save any services that use some sort of persistent file storage */
-        expr jcs:output( "Querying configuration to find persistant storage locations:" );
-        var $get-config-rpc = <get-configuration database="committed" inherit="inherit"> {
-                                 <configuration> {
-                                     <system> {
-                                         <processes>;
-                                     }
-                                 }
-                              }
-
-        /* grab a copy of the config */
-        var $configuration = jcs:execute( $local, $get-config-rpc );
-
-        /* Save the DHCPv4 Snooping Database */
-        var $cleanup_dhcpv4 = cleanup:dhcpv4( $configuration);
-
-        /* Save the DHCPv6 Snooping Database */
-        var $cleanup_dhcpv6 = cleanup:dhcpv6( $configuration);
-
-        /* Save the SLAAC Snooping Database */
-        var $cleanup_slaac = cleanup:slaac( $configuration);
-
-
-        /* Final for warning aggressive cleanups */
-        if ( $aggressiveness == 'lastresort' ) {
-            expr jcs:output('Finished LAST RESORT disk space cleanup!');
-            expr jcs:output('DO NOT REBOOT! UPGRADE JUNOS IMMEDIATELY!!!');
+        /* If model is not compatable then output the below messages */
+        else {
+            expr jcs:output(concat("Your device model is : ",$product," and is NOT compatible with this script"));
+            expr jcs:output("Consider using 'request system storage cleanup' instead");
         }
-        if ( $aggressiveness == 'aggressive' ) {
-            expr jcs:output('Finished AGGRESSIVE disk space cleanup!');
-            expr jcs:output('You may need to reboot the device!!!');
-        }
-
-        var $tracefiles = cleanup:report-tracefiles();
- 
-        expr jcs:close($local);
     }
 }
 
